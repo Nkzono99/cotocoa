@@ -21,3 +21,18 @@ Developers of CoToCoA:
 - Jingde Zhow (Kyoto Univ., Japan)
 - Youhei Sunada (Kobe Univ., Japan)
 - Haichao Zhao (Kyoto Univ., Japan)
+
+## Install
+
+### ctca
+fpm.toml
+
+```toml
+[dependencies]
+ctca = { git = "https://github.com/Nkzono99/cotocoa.git" }
+```
+
+### ctca4py
+```bash
+pip install git+https://github.com/Nkzono99/cotocoa.git
+```
