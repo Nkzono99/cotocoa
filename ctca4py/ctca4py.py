@@ -1,7 +1,9 @@
-from mpi4py import MPI
 import ctypes
 import os
+
 import numpy as np
+from mpi4py import MPI
+
 
 class CTCAWorker:
     DEF_MAXNUMAREAS = 10
