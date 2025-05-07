@@ -13,7 +13,7 @@ readme = "README.md"
 
 authors = [{ name = "Takeshi NANRI" }]
 
-maintainers = [{ name = "Nkzono99", email = "j-nakazono@stu.kobe-u.ac.jp" }]
+maintainers = [{ name = "Takeshi NANRI" }]
 
 license = { file = "LICENSE" }
 
