@@ -1,0 +1,15 @@
+name = "cotocoa"
+version = "1.3.0"
+license = ""
+author = "Takeshi NANRI"
+maintainer = ""
+copyright = "Takeshi NANRI"
+
+[build]
+auto-executables = false
+auto-tests = true
+auto-examples = true
+external-modules = ["mpi"]
+
+[install]
+library = true
