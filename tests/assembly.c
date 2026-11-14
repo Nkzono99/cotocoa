@@ -52,5 +52,27 @@ int main(void)
     x=shard(0,1); x.metadata.global_shape[0]=INT64_MAX;
     assert(cotocoa_assembler_push(a,&x,&out,&error)<0 && strstr(error.message,"max_frame_bytes"));
     cotocoa_assembler_release(a);
-    puts("PASS bounded assembly, duplicates, times, overlap, holes, capacity, missing sources and size limits");
+    /* Eight tiles exercise offsets in all three axes and out-of-order sources. */
+    a=create(2);
+    const int order[8]={7,0,5,2,3,6,1,4};
+    float tile[24];
+    for(int n=0;n<8;++n) {
+        int r=order[n],ox=(r%2)*2,oy=((r/2)%2)*3,oz=(r/4)*4;
+        cotocoa_message m={.data=tile,.completed=1};
+        cotocoa_metadata *meta=&m.metadata;
+        meta->dtype=COTOCOA_FLOAT32; meta->ndim=3; meta->source_count=8; meta->source_rank=r;
+        meta->step=5; meta->has_time=1; meta->time=0.25;
+        for(int d=0;d<3;++d) { meta->shape[d]=d+2; meta->global_shape[d]=2*(d+2); }
+        meta->offset[0]=ox; meta->offset[1]=oy; meta->offset[2]=oz;
+        for(int k=0;k<4;++k) for(int j=0;j<3;++j) for(int i=0;i<2;++i)
+            tile[(k*3+j)*2+i]=(float)(1000*(k+oz)+100*(j+oy)+i+ox);
+        assert(!cotocoa_assembler_push(a,&m,&out,&error));
+        assert((out!=NULL)==(n==7));
+    }
+    assert(!cotocoa_message_view(out,&v,&error));
+    for(int k=0;k<8;++k) for(int j=0;j<6;++j) for(int i=0;i<4;++i)
+        assert(((const float *)v.data)[(k*6+j)*4+i]==1000*k+100*j+i);
+    cotocoa_message_release(out);
+    assert(!cotocoa_assembler_finish(a,&error)); cotocoa_assembler_release(a);
+    puts("PASS bounded assembly, duplicates, times, overlap, holes, capacity, missing sources, size limits and 3D tiles");
 }

@@ -112,6 +112,7 @@ manifest の現行出力は版3で、以前の単一接続の版1・2も native 
 MPI 未初期化なら Context が初期化して所有し、close で終了する。
 既存シミュレーションや mpi4py が初期化済みなら借用し、close 後もその MPI を使える。
 内部 communicator と window はどちらの経路でも解放する。
+Contextの通信操作は各processの1つの呼び出しthreadから行う。
 import や Python/Fortran の finalizer に collective 終了を任せない。
 
 producer close は flush 後に終了を通知する。全 producer が終了し、配送・処理が

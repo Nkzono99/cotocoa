@@ -13,6 +13,7 @@ cotocoa run coupling.yaml --launcher slurm --probe-first
 
 probe は全役割を `cotocoa-probe` で起動し、同じ manifest、rank 配置、MPI/data ABI、
 communicator、window の生成と終了を検査する。利用者の処理と個々の配列の値までは検査しない。
+probeが起動するのはnative C層であり、mpi4pyや利用者コードのリンク環境は実際の連携例でも確認する。
 run/probe の controller は確保済み計算資源で1回だけ起動する。
 Slurm では設定の総数を `srun -n` に指定し、確保資源の範囲で起動する。
 launcher 自体の選択は明示し、MPI 実装の自動推測は行わない。

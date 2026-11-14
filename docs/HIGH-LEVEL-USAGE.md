@@ -12,7 +12,7 @@ Fortran の generic send/copy_to は3型×3次元の overload を提供する。
 
 ## ビルドと導入
 
-C と Fortran の MPI コンパイラ、CMake 3.16 以降、Python 3.10 以降が必要。
+C と Fortran の MPI 3 以降のコンパイラ、CMake 3.16 以降、Python 3.10 以降が必要。
 各 binding とバックエンドは同じ MPI 実装を使う。
 次は Intel MPI のビルド例。Open MPI 等では対応する `mpicc/mpifort` を指定する。
 KUDPC のビルド・テストは、利用可能なキューの計算ノード内で実行する。
@@ -31,6 +31,8 @@ Python package のインストールと native library のビルドは別の操�
 開発 checkout では `build/libcotocoa.so` を探索する。
 インストールしたライブラリを使う場合は `COTOCOA_LIBRARY` に共有ライブラリの
 パスを指定するか、システムの共有ライブラリ探索先へ配置する。
+native installのbinをPATHに加えるか、run/probeの `--coupler/--probe` に実行ファイルを指定する。
+ライブラリの導入先はCMakeの表示するlibまたはlib64へ合わせる。
 
 C 利用者は `cotocoa.h` と `libcotocoa`、Fortran 利用者は生成された module と
 `libcotocoa_fortran`、`libcotocoa` をリンクする。リポジトリ内の CMake target
@@ -103,7 +105,8 @@ launcher が `COTOCOA_MANIFEST` で対応する事前生成 manifest を渡す�
 
 send はライブラリ所有の送信枠へコピーする。戻った後で元配列を上書きできる。
 受信側の処理が完了するまで送信枠を保持し、枠が満杯なら次の send が待機する。
-flush と producer の close は、自 rank の全送信の処理完了を待つ。
+flush と producer の close は、自 rank の全送信が処理済み、またはlatestで未配送破棄済みに
+なるまで待つ。borrowの入力は対応するticketの完了まで保持・変更禁止とする。
 
 受信したメッセージは、処理後に必ず complete する。
 Fortran は `message%complete()`、C は `cotocoa_complete()` と
@@ -115,7 +118,7 @@ Fortran は `message%complete()`、C は `cotocoa_complete()` と
 Fortran の `copy_to` は allocatable 配列へコピーし、complete が native Message を
 解放する。C の view は `cotocoa_message_release` まで有効。
 Python は NumPy 所有の読み取り専用配列へコピーするため、保存した配列は
-Context の終了後も有効。初版の Python 受信にはこの追加コピーがある。
+Context の終了後も有効。Python 受信にはこの追加コピーがある。
 Fortran の Context/Message と C の owning handle をコピーして二重に完了・解放しない。
 
 配列の論理 shape と軸順は全言語で共通。C/F のメモリ配置は descriptor に従って
@@ -138,43 +141,12 @@ close 後に他の役割が MPI を終了している場合、`MPI_COMM_WORLD` �
 .venv/bin/python -m pytest -q
 ```
 
-KUDPC の言語間テストは、5 rank の allocation に対して controller を 1 回起動する。
-[tests/kudpc-matrix.sbatch](../tests/kudpc-matrix.sbatch) がその例。
-利用できるシステム・キューを確認し、必要なら `sbatch -p <queue>` で指定する。
-全9通り、2 producer rank、2 consumer rank、100 件/rank、snapshot 保持と C/F 順、
-0 件、MPI 借用、受信側の例外、既存 C API の転送と RMA を検証する。
-各ケースのログと設定は `build/test-results/` に出力する。
+検証済み環境はKUDPC System A、Intel/Intel MPI、Python 3.12。
+最終回帰70 MPIケース、borrow54、Assembler27、Fortranの正負stride27、
+診断・互換性14ケースと37単体テストを通過した。
+C-only、C/Fortranのrelocatable install、fpm、clean archiveからの実wheelとMPI連携も検証した。
+別のMPI実装やlauncherの実機検証は、この結果に含めない。
 
-初期実装の検証環境は KUDPC System A、Intel/Intel MPI、Python 3.12。
-設定・起動経路のテスト19件と、全9通りの言語間転送を確認した。
-別の MPI 実装や launcher の実機検証は、この結果には含まない。
-
-2026-11-14 の検証はリポジトリ直下で、`module switch SysB SysA` 後に実行した。
-ビルドと設定テストの最終確認はジョブ `9175524`、終了コード 0。
-
-```sh
-tssrun -p gr20001a -t 0:10:00 --rsc p=1:t=2:c=2 \
-  bash -lc 'set -e; cd /LARGE0/gr20001/b36291/Github/cotocoa; cmake --build build -j 2; .venv/bin/python -m pytest -q'
-sbatch -p gr20001a tests/kudpc-matrix.sbatch
-sbatch -p gr20001a examples/snapshot/kudpc.sbatch
-```
-
-MPI テストの最終ジョブ `9175525` は、script 指定の `-t 0:10:00`、
-`--rsc p=5:t=1:c=1` で全9通りと5つの回帰ケースを通過し、終了コード 0。
-Slurm profile は `srun --kill-on-bad-exit=1 /bin/sh <dispatch>` で各ケースを起動する。
-受信側例外のケースは意図した非ゼロ終了と診断を確認して合格とする。
-最小の Fortran→Fortran 例はジョブ `9175533`、`-t 0:05:00`、
-`--rsc p=4:t=1:c=1` で20メッセージを処理し、終了コード 0。
-
-型・次元拡張はビルドジョブ `9175619` で設定テスト28件を通過した。
-`sbatch -p gr20001a tests/kudpc-extended.sbatch` のジョブ `9175623` は、
-`-t 0:15:00`、`--rsc p=5:t=1:c=1` で既存14ケースと追加27ケースを通過した。
-追加ケースは各言語が int32/float32/float64 と1〜3次元の全9組合せを送信し、
-受信言語を交替させ、間引き・逆順スライスと負値の一致を検証する。
-
-複数接続・Task のビルドは `9175689`、設定テスト31件を通過した。
-既存14 MPIケースは `9175679` で通過。
-`sbatch -p gr20001a tests/kudpc-multiplex.sbatch` の `9175716` は
-`-t 0:15:00`、`--rsc p=5:t=1:c=1` で追加20ケースをすべて通過した。
-Stream と Task のそれぞれで全9言語間×9型・次元の162組合せを交換し、
-fan-out と複数 producer、Task の2 worker group、ticket の寿命も検証する。
+KUDPCのMPIテストは5 rankのallocation内でcontrollerを1回だけ起動する。
+[tests/kudpc-final.sbatch](../tests/kudpc-final.sbatch) をはじめ、機能ごとのscriptを用意している。
+実行方法、各テストの範囲、最終ジョブの結果は [検証記録](VALIDATION.md) を参照する。
