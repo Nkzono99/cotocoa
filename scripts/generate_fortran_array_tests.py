@@ -52,9 +52,9 @@ contains
             storage = ','.join(str(s) for s in (6,5,7)[:ndim])
             dims = ','.join(':' for _ in range(ndim))
             slice_ = ','.join(('1:6:2',':',':')[:ndim])
+            reversed_slice = ','.join(('5:1:-2',':',':')[:ndim])
             axes = ['i','j','k'][:ndim]
             at = ','.join(axes)
-            store_at = ','.join(['i*2-1', *axes[1:]])
             expected = '-1000000+source*1000000+step*1000+(i-1)*100'
             if ndim>=2: expected += '+(j-1)*10'
             if ndim>=3: expected += '+k-1'
@@ -64,6 +64,7 @@ contains
             text += f'''
   subroutine array_{dtype}_{ndim}()
     {declaration}, target, asynchronous :: field({storage})
+    {declaration}, pointer, asynchronous :: piece({dims})
     {declaration}, allocatable :: received({dims})
     integer(c_int64_t) :: offset({ndim})
     integer :: step, source, i, j, k, count, frames
@@ -71,19 +72,24 @@ contains
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
-{loops}        field({store_at}) = {expected}
+        if (mod(step,2)==1) then
+          piece=>field({slice_})
+        else
+          piece=>field({reversed_slice})
+        end if
+{loops}        piece({at}) = {expected}
 {ends}        offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
         if (loan==1) then
-          call ctx%borrow('field',field({slice_}),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else if (loan==2) then
-          call ctx%submit_borrow('field',field({slice_}),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%submit_borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else
-          call ctx%send('field',field({slice_}),step=int(step,c_int64_t),offset=offset)
+          call ctx%send('field',piece,step=int(step,c_int64_t),offset=offset)
         end if
         field=0
         if (assemble) call MPI_Barrier(ctx%comm(),ierr)

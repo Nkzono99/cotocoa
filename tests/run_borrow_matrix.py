@@ -14,8 +14,12 @@ output.mkdir(exist_ok=True)
 languages=('c','fortran','python')
 commands={x:[str(root/f'build/tests/typed_{x}')] for x in languages[:2]}
 commands['python']=[sys.executable,str(root/'tests/typed.py')]
+selected=os.environ.get('COTOCOA_TEST_SOURCE')
+if selected is not None and selected not in languages: raise SystemExit('invalid COTOCOA_TEST_SOURCE')
+cases=0
 for mode in (1,2):
     for si,source in enumerate(languages):
+        if selected is not None and source!=selected: continue
         for code,dtype in enumerate(('float64','float32','int32'),1):
             for ndim in (1,2,3):
                 target=languages[(si+code+ndim)%3]
@@ -34,4 +38,5 @@ for mode in (1,2):
                 env=dict(os.environ,COTOCOA_TEST_DTYPE=str(code),COTOCOA_TEST_NDIM=str(ndim),COTOCOA_TEST_LOAN=str(mode))
                 env.pop('COTOCOA_MANIFEST',None)
                 run_case(label,[sys.executable,'-m','cotocoa','run',str(path),'--launcher','slurm'],env,output)
-print('All 54 borrowed stream/task cases passed.',flush=True)
+                cases+=1
+print(f'All {cases} borrowed stream/task cases passed.',flush=True)

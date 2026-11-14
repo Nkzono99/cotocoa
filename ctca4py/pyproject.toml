@@ -4,7 +4,7 @@ requires = ["setuptools"]
 
 [project]
 name = "ctca4py"
-version = "1.0.0"
+version = "1.0.1"
 
 requires-python = ">=3.7"
 
@@ -31,3 +31,8 @@ classifiers = [
 
 [project.urls]
 Repository = "https://github.com/Nkzono99/cotocoa.git"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ctca4py*"]
+namespaces = false

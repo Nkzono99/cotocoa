@@ -1,7 +1,14 @@
 import os
+import sys
+import traceback
 import numpy as np
 from ctca4py.ctcaworker import CTCAWorker
 from mpi4py import MPI
+
+def fail(kind,value,tb):
+    traceback.print_exception(kind,value,tb)
+    MPI.COMM_WORLD.Abort(1)
+sys.excepthook=fail
 
 dtype=int(os.environ['COTOCOA_LEGACY_DTYPE'])
 worker=CTCAWorker()
@@ -14,6 +21,7 @@ while True:
     expected=np.arange(4)+params[0]*1000+params[1]*10
     np.testing.assert_array_equal(data,expected)
     np.testing.assert_array_equal(worker.CTCAW_readarea(area,source,0,4,dtype),expected)
+    worker.CTCA_subcomm.Barrier()
     # Noncontiguous input must be packed, not replaced with zeros or mutated.
     storage=np.repeat(-data,2)
     before=storage.copy()

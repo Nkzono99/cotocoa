@@ -58,6 +58,7 @@ contains
 
   subroutine array_1_1()
     real(c_double), target, asynchronous :: field(6)
+    real(c_double), pointer, asynchronous :: piece(:)
     real(c_double), allocatable :: received(:)
     integer(c_int64_t) :: offset(1)
     integer :: step, source, i, j, k, count, frames
@@ -65,21 +66,26 @@ contains
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
+        if (mod(step,2)==1) then
+          piece=>field(1:6:2)
+        else
+          piece=>field(5:1:-2)
+        end if
       do i=1,3
-        field(i*2-1) = -1000000+source*1000000+step*1000+(i-1)*100
+        piece(i) = -1000000+source*1000000+step*1000+(i-1)*100
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
         if (loan==1) then
-          call ctx%borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else if (loan==2) then
-          call ctx%submit_borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%submit_borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else
-          call ctx%send('field',field(1:6:2),step=int(step,c_int64_t),offset=offset)
+          call ctx%send('field',piece,step=int(step,c_int64_t),offset=offset)
         end if
         field=0
         if (assemble) call MPI_Barrier(ctx%comm(),ierr)
@@ -127,6 +133,7 @@ contains
 
   subroutine array_1_2()
     real(c_double), target, asynchronous :: field(6,5)
+    real(c_double), pointer, asynchronous :: piece(:,:)
     real(c_double), allocatable :: received(:,:)
     integer(c_int64_t) :: offset(2)
     integer :: step, source, i, j, k, count, frames
@@ -134,23 +141,28 @@ contains
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
+        if (mod(step,2)==1) then
+          piece=>field(1:6:2,:)
+        else
+          piece=>field(5:1:-2,:)
+        end if
       do j=1,5
       do i=1,3
-        field(i*2-1,j) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10
+        piece(i,j) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10
       end do
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
         if (loan==1) then
-          call ctx%borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else if (loan==2) then
-          call ctx%submit_borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%submit_borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else
-          call ctx%send('field',field(1:6:2,:),step=int(step,c_int64_t),offset=offset)
+          call ctx%send('field',piece,step=int(step,c_int64_t),offset=offset)
         end if
         field=0
         if (assemble) call MPI_Barrier(ctx%comm(),ierr)
@@ -202,6 +214,7 @@ contains
 
   subroutine array_1_3()
     real(c_double), target, asynchronous :: field(6,5,7)
+    real(c_double), pointer, asynchronous :: piece(:,:,:)
     real(c_double), allocatable :: received(:,:,:)
     integer(c_int64_t) :: offset(3)
     integer :: step, source, i, j, k, count, frames
@@ -209,25 +222,30 @@ contains
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
+        if (mod(step,2)==1) then
+          piece=>field(1:6:2,:,:)
+        else
+          piece=>field(5:1:-2,:,:)
+        end if
       do k=1,7
       do j=1,5
       do i=1,3
-        field(i*2-1,j,k) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10+k-1
+        piece(i,j,k) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10+k-1
       end do
       end do
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
         if (loan==1) then
-          call ctx%borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else if (loan==2) then
-          call ctx%submit_borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%submit_borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else
-          call ctx%send('field',field(1:6:2,:,:),step=int(step,c_int64_t),offset=offset)
+          call ctx%send('field',piece,step=int(step,c_int64_t),offset=offset)
         end if
         field=0
         if (assemble) call MPI_Barrier(ctx%comm(),ierr)
@@ -283,6 +301,7 @@ contains
 
   subroutine array_2_1()
     real(c_float), target, asynchronous :: field(6)
+    real(c_float), pointer, asynchronous :: piece(:)
     real(c_float), allocatable :: received(:)
     integer(c_int64_t) :: offset(1)
     integer :: step, source, i, j, k, count, frames
@@ -290,21 +309,26 @@ contains
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
+        if (mod(step,2)==1) then
+          piece=>field(1:6:2)
+        else
+          piece=>field(5:1:-2)
+        end if
       do i=1,3
-        field(i*2-1) = -1000000+source*1000000+step*1000+(i-1)*100
+        piece(i) = -1000000+source*1000000+step*1000+(i-1)*100
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
         if (loan==1) then
-          call ctx%borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else if (loan==2) then
-          call ctx%submit_borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%submit_borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else
-          call ctx%send('field',field(1:6:2),step=int(step,c_int64_t),offset=offset)
+          call ctx%send('field',piece,step=int(step,c_int64_t),offset=offset)
         end if
         field=0
         if (assemble) call MPI_Barrier(ctx%comm(),ierr)
@@ -352,6 +376,7 @@ contains
 
   subroutine array_2_2()
     real(c_float), target, asynchronous :: field(6,5)
+    real(c_float), pointer, asynchronous :: piece(:,:)
     real(c_float), allocatable :: received(:,:)
     integer(c_int64_t) :: offset(2)
     integer :: step, source, i, j, k, count, frames
@@ -359,23 +384,28 @@ contains
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
+        if (mod(step,2)==1) then
+          piece=>field(1:6:2,:)
+        else
+          piece=>field(5:1:-2,:)
+        end if
       do j=1,5
       do i=1,3
-        field(i*2-1,j) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10
+        piece(i,j) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10
       end do
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
         if (loan==1) then
-          call ctx%borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else if (loan==2) then
-          call ctx%submit_borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%submit_borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else
-          call ctx%send('field',field(1:6:2,:),step=int(step,c_int64_t),offset=offset)
+          call ctx%send('field',piece,step=int(step,c_int64_t),offset=offset)
         end if
         field=0
         if (assemble) call MPI_Barrier(ctx%comm(),ierr)
@@ -427,6 +457,7 @@ contains
 
   subroutine array_2_3()
     real(c_float), target, asynchronous :: field(6,5,7)
+    real(c_float), pointer, asynchronous :: piece(:,:,:)
     real(c_float), allocatable :: received(:,:,:)
     integer(c_int64_t) :: offset(3)
     integer :: step, source, i, j, k, count, frames
@@ -434,25 +465,30 @@ contains
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
+        if (mod(step,2)==1) then
+          piece=>field(1:6:2,:,:)
+        else
+          piece=>field(5:1:-2,:,:)
+        end if
       do k=1,7
       do j=1,5
       do i=1,3
-        field(i*2-1,j,k) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10+k-1
+        piece(i,j,k) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10+k-1
       end do
       end do
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
         if (loan==1) then
-          call ctx%borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else if (loan==2) then
-          call ctx%submit_borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%submit_borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else
-          call ctx%send('field',field(1:6:2,:,:),step=int(step,c_int64_t),offset=offset)
+          call ctx%send('field',piece,step=int(step,c_int64_t),offset=offset)
         end if
         field=0
         if (assemble) call MPI_Barrier(ctx%comm(),ierr)
@@ -508,6 +544,7 @@ contains
 
   subroutine array_3_1()
     integer(c_int32_t), target, asynchronous :: field(6)
+    integer(c_int32_t), pointer, asynchronous :: piece(:)
     integer(c_int32_t), allocatable :: received(:)
     integer(c_int64_t) :: offset(1)
     integer :: step, source, i, j, k, count, frames
@@ -515,21 +552,26 @@ contains
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
+        if (mod(step,2)==1) then
+          piece=>field(1:6:2)
+        else
+          piece=>field(5:1:-2)
+        end if
       do i=1,3
-        field(i*2-1) = -1000000+source*1000000+step*1000+(i-1)*100
+        piece(i) = -1000000+source*1000000+step*1000+(i-1)*100
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
         if (loan==1) then
-          call ctx%borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else if (loan==2) then
-          call ctx%submit_borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%submit_borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else
-          call ctx%send('field',field(1:6:2),step=int(step,c_int64_t),offset=offset)
+          call ctx%send('field',piece,step=int(step,c_int64_t),offset=offset)
         end if
         field=0
         if (assemble) call MPI_Barrier(ctx%comm(),ierr)
@@ -577,6 +619,7 @@ contains
 
   subroutine array_3_2()
     integer(c_int32_t), target, asynchronous :: field(6,5)
+    integer(c_int32_t), pointer, asynchronous :: piece(:,:)
     integer(c_int32_t), allocatable :: received(:,:)
     integer(c_int64_t) :: offset(2)
     integer :: step, source, i, j, k, count, frames
@@ -584,23 +627,28 @@ contains
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
+        if (mod(step,2)==1) then
+          piece=>field(1:6:2,:)
+        else
+          piece=>field(5:1:-2,:)
+        end if
       do j=1,5
       do i=1,3
-        field(i*2-1,j) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10
+        piece(i,j) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10
       end do
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
         if (loan==1) then
-          call ctx%borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else if (loan==2) then
-          call ctx%submit_borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%submit_borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else
-          call ctx%send('field',field(1:6:2,:),step=int(step,c_int64_t),offset=offset)
+          call ctx%send('field',piece,step=int(step,c_int64_t),offset=offset)
         end if
         field=0
         if (assemble) call MPI_Barrier(ctx%comm(),ierr)
@@ -652,6 +700,7 @@ contains
 
   subroutine array_3_3()
     integer(c_int32_t), target, asynchronous :: field(6,5,7)
+    integer(c_int32_t), pointer, asynchronous :: piece(:,:,:)
     integer(c_int32_t), allocatable :: received(:,:,:)
     integer(c_int64_t) :: offset(3)
     integer :: step, source, i, j, k, count, frames
@@ -659,25 +708,30 @@ contains
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
+        if (mod(step,2)==1) then
+          piece=>field(1:6:2,:,:)
+        else
+          piece=>field(5:1:-2,:,:)
+        end if
       do k=1,7
       do j=1,5
       do i=1,3
-        field(i*2-1,j,k) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10+k-1
+        piece(i,j,k) = -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10+k-1
       end do
       end do
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
         if (loan==1) then
-          call ctx%borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else if (loan==2) then
-          call ctx%submit_borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ctx%submit_borrow('field',piece,ticket,step=int(step,c_int64_t),offset=offset)
           call ticket%wait()
           call ticket%release()
         else
-          call ctx%send('field',field(1:6:2,:,:),step=int(step,c_int64_t),offset=offset)
+          call ctx%send('field',piece,step=int(step,c_int64_t),offset=offset)
         end if
         field=0
         if (assemble) call MPI_Barrier(ctx%comm(),ierr)

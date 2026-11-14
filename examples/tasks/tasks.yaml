@@ -14,5 +14,6 @@ connections:
     kind: task
     dtype: float64
     shape: [3]
+    global_shape: [3]
     axes: [item]
     buffer_slots: 2

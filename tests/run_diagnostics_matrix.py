@@ -37,7 +37,7 @@ def config(label,commands=None,mode='snapshot'):
     if commands is None: commands={name:[sys.executable,str(root/'tests/borrow_lifetime.py'),name,str(path)] for name in ('producer','consumer')}
     value={'schema':1,'programs':{name:{'command':cmd,'ranks':2} for name,cmd in commands.items()},
         'runtime':{'timeout_seconds':30},'connections':[{'name':'field','from':'producer.field','to':'consumer.field',
-            'dtype':'float64','shape':[3],'axes':['x'],'mode':mode,'buffer_slots':2}]}
+            'dtype':'float64','shape':[3],'global_shape':[3],'axes':['x'],'mode':mode,'buffer_slots':2}]}
     return path,value
 
 def launch(label,path,value,action='run',extra=(),environment=env):
