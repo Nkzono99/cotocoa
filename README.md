@@ -29,7 +29,10 @@ This fork's proposed Fortran, C, and Python interfaces and configuration-driven
 coupling are described in [the high-level API design](docs/HIGH-LEVEL-API.md)
 (Japanese). All three languages can act as producers or consumers, including
 same-language connections.
-The proposed API and CLI are not implemented yet.
+The first implementation provides fixed 3D float64 snapshots, a native Coupler,
+and `cotocoa check/plan/run`. See [the build and usage guide](docs/HIGH-LEVEL-USAGE.md)
+and [runnable examples](examples/snapshot). Task API and additional data types
+remain planned.
 
 ## Install
 
@@ -41,7 +44,13 @@ fpm.toml
 ctca = { git = "https://github.com/Nkzono99/cotocoa.git" }
 ```
 
-### ctca4py
-```bash
-pip install git+https://github.com/Nkzono99/cotocoa.git
-```
+### High-level Fortran, C, and Python API
+
+Build the native library with CMake and matching MPI C/Fortran compilers, then
+install the Python package from this repository with `pip install -e .`.
+The native build and Python installation are separate steps; see the guide above.
+
+### Legacy ctca4py
+
+The original Worker interface remains under `ctca4py/`; its Python package
+metadata is in that subdirectory. It is separate from the new `cotocoa` package.

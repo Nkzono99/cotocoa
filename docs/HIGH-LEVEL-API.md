@@ -1,6 +1,9 @@
 # CoToCoA 高水準 API 設計案
 
-状態: 設計案。以下の Fortran/C/Python API、CLI、設定形式は未実装。
+状態: 初期実装あり。3 言語の送受信、標準 Coupler、check/plan/run は
+固定 3 次元 float64 の snapshot/all/shards から提供する。
+実際の利用方法と制限は [HIGH-LEVEL-USAGE.md](HIGH-LEVEL-USAGE.md) を参照。
+以下には追加型、複数接続、Task API など後続実装の設計も含む。
 対象: `Nkzono99/cotocoa` の独自拡張。
 設計の基点: `8f705f8c6aa8e7c51b98f50c211dd360d247191a`。
 
@@ -114,7 +117,7 @@ C の各操作は戻り値と `cotocoa_error` で同じエラー分類を返す�
 
 ### Fortran の送信側
 
-以下は提案 API の利用例。既存の `ctca` では実行できない。
+以下は新しい `cotocoa` API の利用例。既存の `ctca` モジュールとは別の入口を使う。
 同名の設定で 2 rank の producer を起動する想定とする。
 
 ```fortran
@@ -339,8 +342,9 @@ Fortran/C の実行ファイルや Python スクリプトに差し替えても�
 
 check と plan は MPI を初期化せず、ユーザープログラムを実行しない。
 check だけで MPI の実行時互換性や collective の整合までは保証しない。
-`run` 前の短い MPI probe で、使用 MPI、ライブラリ ABI、各 rank の設定 digest、
-役割と接続を確認する。probe 自体も計算資源内で実行する。
+初期実装は native Context の開始時に、ABI、全 rank の manifest の一致、
+役割と総 rank 数を確認する。プログラム起動前の独立した MPI probe は後続実装とし、
+追加する場合も計算資源内で実行する。
 
 起動方法は MPI 実装や環境によるため、launcher は明示的な profile とする。
 汎用的な Slurm/PMI 対応を推測して実行しない。KUDPC では login node 上の
@@ -436,7 +440,7 @@ check で検証する。無制限の queue や自動的な上限拡張は設け�
 
 制御情報は版を持つ固定長ヘッダーとする。初版の案は 32 bit 整数 48 語。
 magic、protocol version、設定 digest、operation/connection ID、送信元 rank、
-slot と generation、sequence、step、time の有無と値、shape、offset、
+slot、世代識別を兼ねる sequence、step、time の有無と値、shape、offset、
 要素数を含める。64 bit 値は明示的に分割・復元し、浮動小数の時刻を整数へ
 数値変換しない。C struct の padding に依存する転送形式にはしない。
 
@@ -554,5 +558,5 @@ Task については複数 group に並列配送した場合の完了順を保�
 | 受信処理のエラー / 未完了の途中終了 | 全言語で診断付きでジョブが失敗し、成功通知や無期限の正常終了待ちをしない |
 | 既存の低水準サンプル | 既存 API の正常動作を保持 |
 
-高水準 API の追加を既存 API の書き換えと混ぜず、各段階で利用例と実測結果を
-更新する。この設計段階では API の実装完了や MPI 実行検証済みとは扱わない。
+各段階で利用例と実行検証を更新する。実装済みの機能と検証結果は利用ガイドで
+区別し、設計上の将来機能を実装済みの API として扱わない。
