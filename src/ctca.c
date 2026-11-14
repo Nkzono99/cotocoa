@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include "ctca_internal.h"
 
 MPI_Comm CTCA_subcomm;
 
@@ -78,6 +79,22 @@ static int cpl_datbuf_slotnum;
 static size_t cpl_datbuf_slotsz;
 static int wrk_myworkcomm, wrk_fromrank, wrk_entry;
 static MPI_Win win_reqstat;
+static int ctca_owns_mpi;
+
+static void ctca_init_mpi(void)
+{
+    int initialized;
+    MPI_Initialized(&initialized);
+    ctca_owns_mpi = !initialized;
+    if (ctca_owns_mpi)
+        MPI_Init(NULL, NULL);
+}
+
+static void ctca_finalize_mpi(void)
+{
+    if (ctca_owns_mpi)
+        MPI_Finalize();
+}
 static size_t *areainfo_table;
 static MPI_Win *areawin_table;
 static int *subrank_table;
@@ -94,6 +111,11 @@ static int *cpl_wrkcomm_headrank_table;
 static volatile int *cpl_wrkcomm_stat_table;
 static size_t *wrk_reqbuf;
 static int cpl_reqinfo_entry_mask = (1<<CPL_REQINFO_ENTRY_BITS)-1;
+
+int ctca_sync_area(int areaid)
+{
+    return MPI_Win_sync(areawin_table[areaid]);
+}
 static int areainfo_itemsize;
 static int reqcpl_req_itemsize;
 static int cplwrk_req_itemsize;
@@ -206,6 +228,7 @@ static int setup_common_tables(int myrole)
 
 static int free_common_tables()
 {
+    MPI_Comm_free(&CTCA_subcomm);
     free(areainfo_table);
     free(areawin_table);
     free(role_table);
@@ -278,7 +301,7 @@ int CTCAR_init_detail(int numareas, int numreqs, int intparams)
     maxintparams = intparams;
     mystat = STAT_RUNNING;
 
-    MPI_Init(NULL, NULL);
+    ctca_init_mpi();
     MPI_Comm_size(MPI_COMM_WORLD, &world_nprocs);
     MPI_Comm_rank(MPI_COMM_WORLD, &world_myrank);
 
@@ -483,6 +506,7 @@ int find_reqentry()
 {
     int i, ret;
 
+    MPI_Win_sync(win_reqstat);
     ret = -1;
     for (i = 0; i < req_maxreqs; i++)
         if (req_reqstat_table[i] == REQSTAT_IDLE) {
@@ -516,6 +540,7 @@ int CTCAR_sendreq_hdl(int *intparams, int numintparams, int64_t *hdl)
     } else {
         //  set the entry as the current request id
         req_reqstat_table[reqentry] = req_reqid_ctr;
+        MPI_Win_sync(win_reqstat);
         //  also, use the current request id as the handle of this request
         *hdl = req_reqid_ctr;
         //  increment request id
@@ -614,6 +639,7 @@ int CTCAR_sendreq_withint_hdl(int *intparams, int numintparams, int *data, size_
     } else {
         //  set the entry as the current request id
         req_reqstat_table[reqentry] = req_reqid_ctr;
+        MPI_Win_sync(win_reqstat);
         //  also, use the current request id as the handle of this request
         *hdl = req_reqid_ctr;
         //  increment request id
@@ -651,6 +677,7 @@ int CTCAR_sendreq_withreal4_hdl(int *intparams, int numintparams, float *data, s
     } else {
         //  set the entry as the current request id
         req_reqstat_table[reqentry] = req_reqid_ctr;
+        MPI_Win_sync(win_reqstat);
         //  also, use the current request id as the handle of this request
         *hdl = req_reqid_ctr;
         //  increment request id
@@ -688,6 +715,7 @@ int CTCAR_sendreq_withreal8_hdl(int *intparams, int numintparams, double *data, 
     } else {
         //  set the entry as the current request id
         req_reqstat_table[reqentry] = req_reqid_ctr;
+        MPI_Win_sync(win_reqstat);
         //  also, use the current request id as the handle of this request
         *hdl = req_reqid_ctr;
         //  increment request id
@@ -717,6 +745,7 @@ int CTCAR_wait(int64_t hdl)
 
     do {
         MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &f, MPI_STATUS_IGNORE);
+        MPI_Win_sync(win_reqstat);
         flag = 1;
         for (i = 0; i < req_maxreqs; i++)
             if (req_reqstat_table[i] == hdl) {
@@ -744,6 +773,7 @@ int CTCAR_test(int64_t hdl)
         MPI_Abort(MPI_COMM_WORLD, 0);
     }
 
+    MPI_Win_sync(win_reqstat);
     flag = 1;
     for (i = 0; i < req_maxreqs; i++)
         if (req_reqstat_table[i] == hdl) {
@@ -840,7 +870,7 @@ int CTCAR_finalize()
     free(req_reqbuf);
     free(req_wrkmaster_table);
 
-    MPI_Finalize();
+    ctca_finalize_mpi();
 
     return 0;
 }
@@ -1034,7 +1064,7 @@ int CTCAC_init_detail(int numareas, int numreqs, int intparams, size_t bufslotsz
     cpl_datbuf_slotnum = bufslotnum;
     mystat = STAT_RUNNING;
 
-    MPI_Init(NULL, NULL);
+    ctca_init_mpi();
     MPI_Comm_size(MPI_COMM_WORLD, &world_nprocs);
     MPI_Comm_rank(MPI_COMM_WORLD, &world_myrank);
 
@@ -1925,7 +1955,7 @@ int CTCAC_finalize()
     free(cpl_datbuf); 
     free(cpl_datbuf_stat); 
 
-    MPI_Finalize();
+    ctca_finalize_mpi();
 
     return 0;
 }
@@ -1988,7 +2018,7 @@ int CTCAW_init_detail(int progid, int procspercomm, int numareas, int intparams)
     maxareas = numareas;
     maxintparams = intparams;
 
-    MPI_Init(NULL, NULL);
+    ctca_init_mpi();
     MPI_Comm_size(MPI_COMM_WORLD, &world_nprocs);
     MPI_Comm_rank(MPI_COMM_WORLD, &world_myrank);
 
@@ -2437,7 +2467,7 @@ int CTCAW_finalize()
     free_common_tables();
     free(wrk_reqbuf); 
 
-    MPI_Finalize();
+    ctca_finalize_mpi();
 
     return 0;
 }
