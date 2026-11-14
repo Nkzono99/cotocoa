@@ -1449,6 +1449,32 @@ int cpl_progress()
     return 0;
 }
 
+int ctca_drop_queued(int connection, int source_rank)
+{
+    int dropped = 0;
+    if (myrole != ROLE_CPL || source_rank < 0 || source_rank >= numrequesters)
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    int target = requesterid_table[source_rank];
+    for (int i = 0; i < cpl_reqq_tail; ++i) {
+        char *item = (char *)cpl_reqq + i * cplwrk_req_itemsize;
+        if (CPLWRK_REQ_PROGID(item) < 0 || CPLWRK_REQ_FROMRANK(item) != target ||
+            CPLWRK_REQ_INTPARAMNUM(item) < 3 || CPLWRK_REQ_DATASIZE(item) != 0)
+            continue;
+        int *params = (int *)(item + CPLWRK_REQ_SIZE);
+        int entry = CPLWRK_REQ_ENTRY(item);
+        if (params[2] != connection || entry < 0)
+            continue;
+        int64_t idle = REQSTAT_IDLE;
+        MPI_Put(&idle, sizeof(idle), MPI_BYTE, target, entry,
+                sizeof(idle), MPI_BYTE, win_reqstat);
+        MPI_Win_flush(target, win_reqstat);
+        CPLWRK_REQ_PROGID(item) = -1;
+        ++dropped;
+    }
+    cpl_progress();
+    return dropped;
+}
+
 int cpl_pollreq(int *reqinfo, int *fromrank, int *intparam, int intparamnum, void *data, size_t datasz)
 {
     MPI_Status stat;

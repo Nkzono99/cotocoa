@@ -34,6 +34,8 @@ and `cotocoa check/plan/run`. See [the build and usage guide](docs/HIGH-LEVEL-US
 and [runnable examples](examples/snapshot). Multiple ports, fan-out, multiple
 producer programs, and typed task submission with worker groups are covered in
 [Tasks and ports](docs/TASKS-AND-PORTS.md).
+Streams support `all` and `latest` delivery; see
+[delivery and data lifetime](docs/DELIVERY-AND-SHARING.md).
 
 ## Install
 

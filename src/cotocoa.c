@@ -179,7 +179,7 @@ int cotocoa_open(const char *name,const char *config,cotocoa_context **out,cotoc
     collective_check(ctx,!ctx->routes,error,MPI_COMM_WORLD);
     for(int i=0;i<p->connection_count;++i) {
         ctco_connection *c=&p->connections[i]; route_state *r=&ctx->routes[i];
-        bad=c->delivery!=CTCO_ALL || c->mode!=CTCO_SNAPSHOT;
+        bad=c->mode!=CTCO_SNAPSHOT;
         if(bad) fail(error,COTOCOA_INVALID,"delivery/memory policy is not enabled in this build");
         collective_check(ctx,bad,error,MPI_COMM_WORLD);
         if(ctx->role==CTCO_PRODUCER && c->producer==ctx->program) {
@@ -242,7 +242,21 @@ static int validate_port(cotocoa_context *ctx,const char *port,int kind,const co
 static int64_t send_one(cotocoa_context *ctx,int index,const cotocoa_array_view *a,const cotocoa_send_options *o)
 {
     ctco_connection *c=&ctx->plan.connections[index]; route_state *r=&ctx->routes[index];
-    int slot=r->next_slot; if(r->handles[slot]) CTCAR_wait(r->handles[slot]);
+    int slot=r->next_slot;
+    if(c->delivery==CTCO_LATEST) {
+        slot=-1;
+        for(int s=0;s<c->slots;++s)
+            if(!r->handles[s] || CTCAR_test(r->handles[s])) { slot=s; break; }
+        if(slot<0) {
+            int control[HEADER_WORDS]={0};
+            control[0]=MAGIC; control[1]=2; control[2]=index+1;
+            control[4]=ctx->source_rank; control[47]=1;
+            digest_words(ctx->plan.digest,control+26);
+            CTCAR_sendreq(control,HEADER_WORDS);
+            while(slot<0) for(int s=0;s<c->slots;++s)
+                if(CTCAR_test(r->handles[s])) { slot=s; break; }
+        }
+    } else if(r->handles[slot]) CTCAR_wait(r->handles[slot]);
     char *dest=r->buffer+(size_t)slot*c->bytes;
     const char *base=a->data; size_t n=0,unit=ctco_itemsize(c->dtype);
     for(int64_t k=0;k<c->shape[2];++k) for(int64_t j=0;j<c->shape[1];++j) for(int64_t i=0;i<c->shape[0];++i)
@@ -322,7 +336,7 @@ int cotocoa_flush(cotocoa_context *ctx,cotocoa_error *error)
 static int validate_header(cotocoa_context *ctx,const int *h,int source,cotocoa_error *error)
 {
     int digest[8]; digest_words(ctx->plan.digest,digest);
-    if(h[0]!=MAGIC || h[1]!=2 || h[2]<1 || h[2]>ctx->plan.connection_count)
+    if(h[0]!=MAGIC || h[1]!=2 || h[47]!=0 || h[2]<1 || h[2]>ctx->plan.connection_count)
         return fail(error,COTOCOA_INVALID,"invalid protocol/version/connection from source %d",source);
     ctco_connection *c=&ctx->plan.connections[h[2]-1]; ctco_program *a=&ctx->plan.programs[c->producer];
     if(h[3]<0 || h[3]>=c->slots || source<a->source_offset || source>=a->source_offset+a->ranks || h[4]!=source ||
@@ -413,7 +427,22 @@ int cotocoa_couple(cotocoa_context *ctx,cotocoa_error *e)
     while(!ctx->ended) {
         int info[CTCAC_REQINFOITEMS],source,h[HEADER_WORDS]; CTCAC_pollreq(info,&source,h,HEADER_WORDS);
         if(CTCAC_isfin()) { ctx->ended=1; break; }
+        if(h[47]==1) {
+            int digest[8]; digest_words(ctx->plan.digest,digest);
+            if(h[0]!=MAGIC || h[1]!=2 || h[2]<1 || h[2]>ctx->plan.connection_count ||
+               h[4]!=source || memcmp(h+26,digest,sizeof(digest))) {
+                fail(e,COTOCOA_INVALID,"invalid latest control request"); cotocoa_abort(ctx,e);
+            }
+            ctco_connection *c=&ctx->plan.connections[h[2]-1];
+            ctco_program *p=&ctx->plan.programs[c->producer];
+            if(c->delivery!=CTCO_LATEST || source<p->source_offset || source>=p->source_offset+p->ranks) {
+                fail(e,COTOCOA_INVALID,"invalid latest control source/policy"); cotocoa_abort(ctx,e);
+            }
+            ctca_drop_queued(h[2],source);
+            continue;
+        }
         if(validate_header(ctx,h,source,e)) cotocoa_abort(ctx,e);
+        if(ctx->plan.connections[h[2]-1].delivery==CTCO_LATEST) ctca_drop_queued(h[2],source);
         CTCAC_enqreq(info,ctx->plan.connections[h[2]-1].consumer+1,h,HEADER_WORDS);
     }
     return COTOCOA_OK;

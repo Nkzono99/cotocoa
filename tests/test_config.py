@@ -34,7 +34,7 @@ def test_plan_and_manifest(tmp_path, config):
 
 
 @pytest.mark.parametrize("key,value", [
-    ("delivery", "latest"), ("dtype", "float16"), ("buffer_slots", 4095),
+    ("delivery", "newest"), ("dtype", "float16"), ("buffer_slots", 4095),
     ("buffer_slots", True), ("shape", [0, 5, 7]), ("shape", [3, 5]),
     ("shape", [2**40, 5, 7]), ("axes", ["x", "x", "z"]),
     ("units", "V\ninjected"), ("global_shape", [2, 5, 7]),

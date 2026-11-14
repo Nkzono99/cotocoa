@@ -208,7 +208,7 @@ def load_config(path,*,check_executables=True):
         if source==target: raise ConfigError('producer and consumer must be different programs')
         producers.add(source); consumers.add(target)
         for key,default,allowed in (('kind','stream',{'stream','task'}),('mode','snapshot',{'snapshot'}),
-                                    ('delivery','all',{'all'}),('distribution','shards',{'shards'})):
+                                    ('delivery','all',{'all','latest'}),('distribution','shards',{'shards'})):
             value=c.setdefault(key,default)
             if not isinstance(value,str) or value not in allowed:
                 raise ConfigError(f'unsupported {key}: {value!r}')
@@ -226,6 +226,10 @@ def load_config(path,*,check_executables=True):
         if len(set(c['axes']))!=ndim: raise ConfigError('axis names must be unique')
         for key in ('units','time_unit'): c[key]=_label(c.get(key,'1'),key)
         c['buffer_slots']=_integer(c.get('buffer_slots',2),'buffer_slots',4094)
+        if c['kind']=='task' and c['delivery']!='all':
+            raise ConfigError('tasks require delivery: all')
+        if c['delivery']=='latest' and c['buffer_slots']<2:
+            raise ConfigError('latest requires at least two buffer_slots')
         requests[source]+=c['buffer_slots']
         if requests[source]>4094: raise ConfigError(f'{source}: total outgoing buffer_slots exceeds 4094')
         signature=tuple(json.dumps(c[k],sort_keys=True) for k in
