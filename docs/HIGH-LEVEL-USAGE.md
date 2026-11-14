@@ -1,11 +1,14 @@
 # Fortran・C・Python の名前付き配列連携
 
-高水準 API の最初の実装は、3 言語すべての送信・受信に対応する。
-`int32/float32/float64` の固定 1〜3 次元配列を、一方向の `snapshot/all/shards` として転送する。
+高水準 API 0.3 は、3言語すべての送信・受信に対応する。
+`int32/float32/float64` の固定1〜3次元配列を名前付き port で転送する。
+snapshot/borrow、stream の all/latest、Task と複数 worker group を提供する。
 複数接続と Task API は [TASKS-AND-PORTS.md](TASKS-AND-PORTS.md) を参照する。
 型や領域分割の異なる配列の自動変換、双方向・循環連成は対象に含めない。
 非連続配列は送信時に packing する。C/Python は正負の byte stride に対応し、
 Fortran の generic send/copy_to は3型×3次元の overload を提供する。
+寿命は [配送と保持](DELIVERY-AND-SHARING.md)、全体の配列は [Assembler](ASSEMBLY.md)、
+起動確認と状態照会は [診断](DIAGNOSTICS.md) を参照する。
 
 ## ビルドと導入
 
@@ -20,6 +23,7 @@ cmake -S . -B build \
 cmake --build build -j 2
 python -m venv .venv
 .venv/bin/pip install -e .
+cmake --install build --prefix /your/install/prefix
 ```
 
 Python package のインストールと native library のビルドは別の操作。
@@ -31,6 +35,10 @@ Python package のインストールと native library のビルドは別の操�
 C 利用者は `cotocoa.h` と `libcotocoa`、Fortran 利用者は生成された module と
 `libcotocoa_fortran`、`libcotocoa` をリンクする。リポジトリ内の CMake target
 `cotocoa` と `cotocoa_fortran` が include とリンク情報を持つ。
+インストール後は `find_package(cotocoa 0.3 REQUIRED)` と
+`cotocoa::cotocoa`、Fortran は `find_package(cotocoa 0.3 REQUIRED COMPONENTS Fortran)` と
+`cotocoa::cotocoa_fortran` を使う。Fortran module はビルド時と互換なコンパイラが必要。
+`-DCOTOCOA_ENABLE_FORTRAN=OFF` なら Fortran コンパイラなしで C 層、Coupler、probe をビルドできる。
 
 ## 最小例を起動する
 
@@ -63,10 +71,11 @@ controller を `srun` で rank 数だけ複製しない。
 .venv/bin/cotocoa run examples/snapshot/cotocoa.yaml --launcher slurm
 ```
 
-この profile は `srun` が割り当て済みの全 rank を起動する前提。
-確保したタスク数と設定の総 rank 数は一致させる。
+この profile は設定の総 rank 数を `srun -n` に指定する。
+設定の総 rank 数以上のタスクを allocation に確保する。
 各 rank に役割を割り当てる shell script と native manifest を共有ディレクトリへ
-生成し、ジョブ終了後に削除する。KUDPC の login/transfer node 上の run は拒否する。
+生成し、`.cotocoa/runs/<ID>/` に実行記録とともに残す。
+`cotocoa status DIR` で状態を照会する。KUDPC の login/transfer node 上の run は拒否する。
 資源の予約や batch submit は CLI の外で行う。
 
 ## 言語を差し替える

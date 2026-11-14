@@ -105,7 +105,7 @@ class Plan:
     @property
     def producer_buffer_bytes(self):
         return sum(self.programs[c['from'].split('.')[0]]['ranks']*c['buffer_slots']*_bytes(c)
-                   for c in self.connections)
+                   for c in self.connections if c['mode']=='snapshot')
 
     @property
     def consumer_buffer_bytes(self):
@@ -207,7 +207,7 @@ def load_config(path,*,check_executables=True):
         source,target=endpoints
         if source==target: raise ConfigError('producer and consumer must be different programs')
         producers.add(source); consumers.add(target)
-        for key,default,allowed in (('kind','stream',{'stream','task'}),('mode','snapshot',{'snapshot'}),
+        for key,default,allowed in (('kind','stream',{'stream','task'}),('mode','snapshot',{'snapshot','borrow'}),
                                     ('delivery','all',{'all','latest'}),('distribution','shards',{'shards'})):
             value=c.setdefault(key,default)
             if not isinstance(value,str) or value not in allowed:
@@ -250,6 +250,8 @@ def load_config(path,*,check_executables=True):
                 c['to'].split('.')[0]==name and c['kind']=='stream' for c in connections):
             raise ConfigError('multiple worker groups require task-only incoming connections')
     producers=tuple(sorted(producers)); consumers=tuple(sorted(consumers))
+    if sum(normalized[name]['ranks'] for name in producers)>524288:
+        raise ConfigError('producer rank total exceeds the legacy request encoding limit (524288)')
     ordered={name:normalized[name] for name in (*producers,*consumers)}
     plan=Plan(path,producers,consumers,ordered,tuple(connections),runtime)
     if plan.queue_capacity>=2**31-1: raise ConfigError('Coupler request capacity overflows')

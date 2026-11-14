@@ -88,7 +88,7 @@ static int validate(ctco_plan *p)
         } else seen_consumer=1;
         world+=a->ranks;
     }
-    if(!sources || !seen_consumer || world>INT_MAX) return 0;
+    if(!sources || sources>524288 || !seen_consumer || world>INT_MAX) return 0;
     p->source_count=(int)sources;
     p->coupler_rank=(int)sources;
     p->world_size=(int)world;
@@ -172,11 +172,16 @@ int ctco_plan_read(const char *path, ctco_plan *p, cotocoa_error *error)
     memcpy(p->digest,buffer,65);
     if(version!=3) {
         /* Preserve the committed single-connection native formats. */
-        char extra;
         p->program_count=2; p->connection_count=1;
         for(int i=0;i<2;++i) {
             ctco_program *a=&p->programs[i];
-            if(!line(file,buffer,sizeof(buffer)) || sscanf(buffer,"%63s %d %c",a->name,&a->ranks,&extra)!=2) goto done;
+            if(!line(file,buffer,sizeof(buffer))) goto done;
+            char *separator=strchr(buffer,' '), *end;
+            if(!separator || separator==buffer || separator-buffer>63) goto done;
+            *separator='\0'; strcpy(a->name,buffer);
+            errno=0; intmax_t ranks=strtoimax(separator+1,&end,10);
+            if(errno || end==separator+1 || *end || ranks<1 || ranks>1000000) goto done;
+            a->ranks=(int)ranks;
             a->role=i ? CTCO_CONSUMER : CTCO_PRODUCER;
             a->group_size=a->ranks;
         }

@@ -138,3 +138,11 @@ def test_ambiguous_fanout_and_cycles(tmp_path,config):
     second.update({'from':'consumer.other','to':'producer.field','kind':'stream'})
     with pytest.raises(ConfigError,match='roles|cycles'):
         load_config(write(tmp_path,config))
+
+
+def test_rank_encoding_limit_and_borrow_memory(tmp_path,config):
+    config['connections'][0]['mode']='borrow'
+    assert load_config(write(tmp_path,config)).producer_buffer_bytes==0
+    config['programs']['producer']['ranks']=524289
+    with pytest.raises(ConfigError,match='encoding limit'):
+        load_config(write(tmp_path,config))

@@ -26,6 +26,7 @@ class Context:
         self._active = None
         self._used = False
         self.comm = None
+        self._pins=[]
 
     def open(self):
         if self._used:
@@ -75,17 +76,45 @@ class Context:
         return view,options
 
     def send(self,name,array,*,step,time=None,offset=None):
+        self._collect_pins()
         view,options=self._prepare(array,step,time,offset)
         error = Error()
         _check(self._lib.cotocoa_send(self._handle, name.encode(), C.byref(view),
                                     C.byref(options), C.byref(error)), error)
 
-    def submit(self,name,array,*,step=0,time=None,offset=None):
+    def submit(self,name,array,*,step=0,time=None,offset=None,borrow=False):
+        if borrow:
+            return self._borrow(name,array,step,time,offset,True)
         view,options=self._prepare(array,step,time,offset)
         error,handle=Error(),C.c_void_p()
         _check(self._lib.cotocoa_submit(self._handle,name.encode(),C.byref(view),C.byref(options),
                                        C.byref(handle),C.byref(error)),error)
-        return Ticket(self._lib,handle)
+        return Ticket(self._lib,handle,self)
+
+    def borrow(self,name,array,*,step=0,time=None,offset=None):
+        return self._borrow(name,array,step,time,offset,False)
+
+    def _borrow(self,name,array,step,time,offset,task):
+        self._collect_pins()
+        view,options=self._prepare(array,step,time,offset)
+        error,handle=Error(),C.c_void_p()
+        publish=self._lib.cotocoa_submit_borrow if task else self._lib.cotocoa_borrow
+        _check(publish(self._handle,name.encode(),C.byref(view),C.byref(options),C.byref(handle),C.byref(error)),error)
+        self._lib.cotocoa_ticket_retain(handle)
+        pin=Ticket(self._lib,C.c_void_p(handle.value))
+        self._pins.append((pin,array))
+        ticket=Ticket(self._lib,handle,self)
+        self._collect_pins()
+        return ticket
+
+    def _collect_pins(self):
+        remaining=[]
+        for ticket,array in self._pins:
+            if ticket.test():
+                ticket.release()
+            else:
+                remaining.append((ticket,array))
+        self._pins=remaining
 
     def receive(self,name=None):
         return self._receive(name,False)
@@ -113,6 +142,7 @@ class Context:
         self._require_open()
         error = Error()
         _check(self._lib.cotocoa_flush(self._handle, C.byref(error)), error)
+        self._collect_pins()
 
     def close(self):
         self._require_open()
@@ -120,6 +150,7 @@ class Context:
         _check(self._lib.cotocoa_close(self._handle, C.byref(error)), error)
         self._handle = C.c_void_p()
         self.comm = None
+        self._collect_pins()
 
 
 class Message:
@@ -138,6 +169,8 @@ class Message:
         self.kind='task' if meta.kind else 'stream'
         self.name,self.port,self.source=meta.name.decode(),meta.port.decode(),meta.source.decode()
         self.source_count=meta.source_count
+        self.delivery='latest' if meta.delivery else 'all'
+        self.mode='borrow' if meta.mode else 'snapshot'
         dtype, ctype = {1: (np.dtype("float64"), C.c_double),
                         2: (np.dtype("float32"), C.c_float),
                         3: (np.dtype("int32"), C.c_int32)}[meta.dtype]
@@ -170,14 +203,17 @@ class Message:
 
 class Ticket:
     """Completion handle; releasing it never cancels the requested work."""
-    def __init__(self,lib,handle):
+    def __init__(self,lib,handle,owner=None):
         self._lib,self._handle=lib,handle
+        self._owner=owner
 
     def test(self):
         if not self._handle:
             raise RuntimeError('ticket was released')
         done,error=C.c_int(),Error()
         _check(self._lib.cotocoa_ticket_test(self._handle,C.byref(done),C.byref(error)),error)
+        if self._owner is not None:
+            self._owner._collect_pins()
         return bool(done.value)
 
     def wait(self):
@@ -185,12 +221,90 @@ class Ticket:
             raise RuntimeError('ticket was released')
         error=Error()
         _check(self._lib.cotocoa_ticket_wait(self._handle,C.byref(error)),error)
+        if self._owner is not None:
+            self._owner._collect_pins()
 
     def release(self):
         if self._handle:
             self._lib.cotocoa_ticket_release(self._handle)
             self._handle=C.c_void_p()
+        self._owner=None
+
+    def __copy__(self):
+        if not self._handle:
+            raise RuntimeError('ticket was released')
+        self._lib.cotocoa_ticket_retain(self._handle)
+        return Ticket(self._lib,C.c_void_p(self._handle.value),self._owner)
+
+    def __deepcopy__(self,memo):
+        return self.__copy__()
 
     def __del__(self):
         # Native ticket release only frees local memory, with no MPI operation.
         self.release()
+
+
+class Frame(Message):
+    """An assembled, NumPy-owned frame; no communication acknowledgement."""
+    def __init__(self, assembler, handle):
+        try:
+            super().__init__(assembler,handle)
+        finally:
+            assembler._lib.cotocoa_message_release(handle)
+        self._context=None
+        self._handle=C.c_void_p()
+
+    def complete(self):
+        raise RuntimeError('assembled frames need no complete(); complete each input message')
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self,exc_type,exc,tb):
+        return False
+
+
+class Assembler:
+    """Bounded local assembly of one all-delivery stream connection."""
+    def __init__(self,*,max_pending_steps=2,max_frame_bytes=256*1024*1024):
+        self._lib=library()
+        self._handle=C.c_void_p()
+        steps=operator.index(max_pending_steps)
+        limit=operator.index(max_frame_bytes)
+        if not 1<=steps<=1024 or not 1<=limit<2**64:
+            raise ValueError('invalid pending step/frame byte limits')
+        error=Error()
+        _check(self._lib.cotocoa_assembler_create(steps,limit,C.byref(self._handle),C.byref(error)),error)
+
+    def push(self,message):
+        if not self._handle or not message._handle:
+            raise RuntimeError('assembler and input message must be open')
+        handle,error=C.c_void_p(),Error()
+        _check(self._lib.cotocoa_assembler_push(self._handle,message._handle,C.byref(handle),C.byref(error)),error)
+        return Frame(self,handle) if handle else None
+
+    def finish(self):
+        if not self._handle:
+            raise RuntimeError('assembler is closed')
+        error=Error()
+        _check(self._lib.cotocoa_assembler_finish(self._handle,C.byref(error)),error)
+
+    def close(self):
+        if self._handle:
+            self._lib.cotocoa_assembler_release(self._handle)
+            self._handle=C.c_void_p()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self,exc_type,exc,tb):
+        try:
+            if exc_type is None:
+                self.finish()
+        finally:
+            self.close()
+
+    def __del__(self):
+        # Only local memory: safe after MPI shutdown.
+        if getattr(self,'_handle',None):
+            self.close()

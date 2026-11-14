@@ -28,7 +28,8 @@ class Metadata(C.Structure):
                 ("units", C.c_char * 64), ("time_unit", C.c_char * 64),
                 ("dtype", C.c_int), ("ndim", C.c_int),
                 ("kind", C.c_int), ("connection_id", C.c_int), ("source_count", C.c_int),
-                ("name", C.c_char*64), ("port", C.c_char*64), ("source", C.c_char*64)]
+                ("name", C.c_char*64), ("port", C.c_char*64), ("source", C.c_char*64),
+                ("delivery", C.c_int), ("mode", C.c_int)]
 
 
 @lru_cache(maxsize=1)
@@ -55,6 +56,8 @@ def library():
         "abort": ([ptr, err], None),
         "send": ([ptr, C.c_char_p, C.POINTER(View), C.POINTER(Options), err], C.c_int),
         "submit": ([ptr,C.c_char_p,C.POINTER(View),C.POINTER(Options),C.POINTER(ptr),err],C.c_int),
+        "borrow": ([ptr,C.c_char_p,C.POINTER(View),C.POINTER(Options),C.POINTER(ptr),err],C.c_int),
+        "submit_borrow": ([ptr,C.c_char_p,C.POINTER(View),C.POINTER(Options),C.POINTER(ptr),err],C.c_int),
         "ticket_test": ([ptr,C.POINTER(C.c_int),err],C.c_int),
         "ticket_wait": ([ptr,err],C.c_int),
         "ticket_retain": ([ptr],None),
@@ -66,6 +69,10 @@ def library():
         "message_metadata": ([ptr, C.POINTER(Metadata), err], C.c_int),
         "complete": ([ptr, err], C.c_int),
         "message_release": ([ptr], None),
+        "assembler_create": ([C.c_int,C.c_uint64,C.POINTER(ptr),err],C.c_int),
+        "assembler_push": ([ptr,ptr,C.POINTER(ptr),err],C.c_int),
+        "assembler_finish": ([ptr,err],C.c_int),
+        "assembler_release": ([ptr],None),
     }
     for name, (args, result) in signatures.items():
         func = getattr(lib, "cotocoa_" + name)

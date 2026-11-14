@@ -1,5 +1,7 @@
+#define _POSIX_C_SOURCE 200809L
 #include "cotocoa.h"
 #include "cotocoa_plan.h"
+#include "cotocoa_internal.h"
 #include "ctca.h"
 #include "ctca_internal.h"
 #include <limits.h>
@@ -8,16 +10,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define HEADER_WORDS 48
 #define MAGIC 0x43544341
 _Static_assert(sizeof(int)==4 && sizeof(float)==4 && sizeof(double)==8,
                "CoToCoA requires 32-bit int/float and 64-bit double");
 
+typedef struct attachment {
+    void *base;
+    size_t bytes;
+    unsigned int references;
+    struct attachment *next;
+} attachment;
 typedef struct {
     char *buffer;
     int area,next_slot;
     int64_t sequence,*handles,*received_sequences;
+    attachment **loans;
 } route_state;
 struct cotocoa_context {
     ctco_plan plan;
@@ -26,21 +36,74 @@ struct cotocoa_context {
     MPI_Comm comm;
     cotocoa_message *active;
     cotocoa_ticket *tickets;
-};
-struct cotocoa_message {
-    cotocoa_context *context;
-    cotocoa_metadata metadata;
-    void *data;
-    int completed;
+    MPI_Win dynamic_window;
+    attachment *attachments;
+    int world_rank, current_connection, status_failed;
+    int64_t current_step;
+    uint64_t sent, received, completed, dropped;
+    double started, last_status;
+    char phase[64];
 };
 struct cotocoa_ticket {
     cotocoa_context *context;
     cotocoa_ticket *next;
-    int64_t handle;
+    int64_t *handles;
+    int handle_count;
     int completed;
     unsigned int references;
 };
 static int context_used;
+static cotocoa_context *guard_context;
+static void retire_completed(cotocoa_context *ctx);
+
+static void json_string(FILE *f,const char *text)
+{
+    fputc('"',f);
+    for(const unsigned char *p=(const unsigned char *)text;*p;++p) {
+        if(*p=='"' || *p=='\\') { fputc('\\',f); fputc(*p,f); }
+        else if(*p<32) fprintf(f,"\\u%04x",*p);
+        else fputc(*p,f);
+    }
+    fputc('"',f);
+}
+static void record_status(cotocoa_context *ctx,const char *phase,const char *detail,int force)
+{
+    if(!ctx) return;
+    snprintf(ctx->phase,sizeof(ctx->phase),"%s",phase);
+    const char *directory=getenv("COTOCOA_RUN_DIR");
+    if(!directory || !*directory || ctx->status_failed) return;
+    double now=MPI_Wtime();
+    if(!force && now-ctx->last_status<1.0) return;
+    char path[4096],temporary[4096];
+    if(snprintf(path,sizeof(path),"%s/rank-%06d.json",directory,ctx->world_rank)>=(int)sizeof(path) ||
+       snprintf(temporary,sizeof(temporary),"%s.tmp-%ld",path,(long)getpid())>=(int)sizeof(temporary)) {
+        ctx->status_failed=1; return;
+    }
+    FILE *f=fopen(temporary,"w");
+    if(!f) { ctx->status_failed=1; fprintf(stderr,"cotocoa: cannot write rank status: %s\n",path); return; }
+    const char *program=ctx->program>=0 ? ctx->plan.programs[ctx->program].name : "__coupler__";
+    fprintf(f,"{\"rank\":%d,\"program\":",ctx->world_rank); json_string(f,program);
+    fputs(",\"phase\":",f); json_string(f,phase);
+    fputs(",\"detail\":",f); json_string(f,detail ? detail : "");
+    fprintf(f,",\"connection_id\":%d,\"step\":%lld,\"sent\":%llu,\"received\":%llu,\"completed\":%llu,\"dropped\":%llu,\"elapsed_seconds\":%.6f}\n",
+        ctx->current_connection,(long long)ctx->current_step,(unsigned long long)ctx->sent,
+        (unsigned long long)ctx->received,(unsigned long long)ctx->completed,(unsigned long long)ctx->dropped,now-ctx->started);
+    int bad=ferror(f); if(fclose(f)) bad=1;
+    if(!bad && !rename(temporary,path)) ctx->last_status=now;
+    else { unlink(temporary); ctx->status_failed=1; }
+}
+static void guard_wait(const char *operation,double started)
+{
+    cotocoa_context *ctx=guard_context;
+    if(!ctx) return;
+    record_status(ctx,operation,NULL,0);
+    if(ctx->plan.timeout>0 && MPI_Wtime()-started>=ctx->plan.timeout) {
+        cotocoa_error e={0}; e.code=COTOCOA_STATE;
+        snprintf(e.message,sizeof(e.message),"timeout waiting for %s; connection=%d step=%lld limit=%.6g seconds",
+            operation,ctx->current_connection,(long long)ctx->current_step,ctx->plan.timeout);
+        cotocoa_abort(ctx,&e);
+    }
+}
 
 static int fail(cotocoa_error *error,int code,const char *format,...)
 {
@@ -62,6 +125,7 @@ void cotocoa_abort(cotocoa_context *ctx,const cotocoa_error *error)
     fprintf(stderr,"cotocoa: rank=%d program=%s: %s\n",rank,program,
             error ? error->message : "unrecoverable error");
     fflush(stderr);
+    if(initialized && !finalized) record_status(ctx,"failed",error ? error->message : "unrecoverable error",1);
     if(initialized && !finalized) MPI_Abort(MPI_COMM_WORLD,EXIT_FAILURE);
     exit(EXIT_FAILURE);
 }
@@ -119,7 +183,7 @@ cotocoa_send_options cotocoa_send_defaults(void)
 static void register_route(cotocoa_context *ctx,int index)
 {
     ctco_connection *c=&ctx->plan.connections[index]; route_state *r=&ctx->routes[index];
-    size_t count=c->producer==ctx->program ? c->elements*(size_t)c->slots : 0;
+    size_t count=c->producer==ctx->program && c->mode==CTCO_SNAPSHOT ? c->elements*(size_t)c->slots : 0;
     if(c->dtype==COTOCOA_FLOAT64) {
         if(ctx->role==CTCO_PRODUCER) CTCAR_regarea_real8((double *)r->buffer,count,&r->area);
         else if(ctx->role==CTCO_COUPLER) CTCAC_regarea_real8(&r->area);
@@ -147,7 +211,8 @@ int cotocoa_open(const char *name,const char *config,cotocoa_context **out,cotoc
     cotocoa_context *ctx=calloc(1,sizeof(*ctx));
     if(!ctx) fail(error,COTOCOA_MEMORY,"cannot allocate Context");
     collective_check(ctx,!ctx,error,MPI_COMM_WORLD);
-    ctx->program=-1; ctx->owns_mpi=!initialized;
+    ctx->program=-1; ctx->owns_mpi=!initialized; ctx->dynamic_window=MPI_WIN_NULL;
+    ctx->world_rank=world_rank; ctx->started=MPI_Wtime(); ctx->current_connection=-1;
     const char *path=getenv("COTOCOA_MANIFEST"); if(!path || !*path) path=config;
     int bad=ctco_plan_read(path,&ctx->plan,error)!=COTOCOA_OK;
     collective_check(ctx,bad,error,MPI_COMM_WORLD);
@@ -167,11 +232,11 @@ int cotocoa_open(const char *name,const char *config,cotocoa_context **out,cotoc
                  name,expected_name,world_size,p->world_size);
     collective_check(ctx,bad,error,MPI_COMM_WORLD);
     uint32_t endian=1;
-    int abi[6]={(int)sizeof(int),(int)sizeof(float),(int)sizeof(double),(int)sizeof(size_t),
-                *(unsigned char *)&endian,(int)sizeof(MPI_Fint)},abi_low[6],abi_high[6];
-    MPI_Allreduce(abi,abi_low,6,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
-    MPI_Allreduce(abi,abi_high,6,MPI_INT,MPI_MAX,MPI_COMM_WORLD);
-    bad=memcmp(abi_low,abi_high,sizeof(abi_low)) || sizeof(size_t)!=8 || sizeof(MPI_Fint)!=sizeof(int);
+    int abi[7]={(int)sizeof(int),(int)sizeof(float),(int)sizeof(double),(int)sizeof(size_t),
+                *(unsigned char *)&endian,(int)sizeof(MPI_Fint),(int)sizeof(MPI_Aint)},abi_low[7],abi_high[7];
+    MPI_Allreduce(abi,abi_low,7,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
+    MPI_Allreduce(abi,abi_high,7,MPI_INT,MPI_MAX,MPI_COMM_WORLD);
+    bad=memcmp(abi_low,abi_high,sizeof(abi_low)) || sizeof(size_t)!=8 || sizeof(MPI_Fint)!=sizeof(int) || sizeof(MPI_Aint)!=8;
     if(bad) fail(error,COTOCOA_INVALID,"incompatible native MPI/data ABI across ranks");
     collective_check(ctx,bad,error,MPI_COMM_WORLD);
     ctx->routes=calloc((size_t)p->connection_count,sizeof(route_state));
@@ -179,12 +244,11 @@ int cotocoa_open(const char *name,const char *config,cotocoa_context **out,cotoc
     collective_check(ctx,!ctx->routes,error,MPI_COMM_WORLD);
     for(int i=0;i<p->connection_count;++i) {
         ctco_connection *c=&p->connections[i]; route_state *r=&ctx->routes[i];
-        bad=c->mode!=CTCO_SNAPSHOT;
-        if(bad) fail(error,COTOCOA_INVALID,"delivery/memory policy is not enabled in this build");
-        collective_check(ctx,bad,error,MPI_COMM_WORLD);
         if(ctx->role==CTCO_PRODUCER && c->producer==ctx->program) {
-            r->buffer=calloc((size_t)c->slots,c->bytes); r->handles=calloc((size_t)c->slots,sizeof(int64_t));
-            bad=!r->buffer || !r->handles;
+            r->handles=calloc((size_t)c->slots,sizeof(int64_t));
+            if(c->mode==CTCO_SNAPSHOT) r->buffer=calloc((size_t)c->slots,c->bytes);
+            else r->loans=calloc((size_t)c->slots,sizeof(attachment *));
+            bad=!r->handles || (c->mode==CTCO_SNAPSHOT ? !r->buffer : !r->loans);
         } else if(ctx->role==CTCO_CONSUMER && c->consumer==ctx->program) {
             r->received_sequences=calloc((size_t)p->programs[c->producer].ranks,sizeof(int64_t));
             bad=!r->received_sequences;
@@ -202,6 +266,14 @@ int cotocoa_open(const char *name,const char *config,cotocoa_context **out,cotoc
         MPI_Comm_split(CTCA_subcomm,ctx->program,world_rank,&ctx->comm);
     } else MPI_Comm_dup(CTCA_subcomm,&ctx->comm);
     MPI_Comm_rank(ctx->comm,&ctx->rank); *out=ctx;
+    int has_borrow=0;
+    for(int i=0;i<p->connection_count;++i) if(p->connections[i].mode==CTCO_BORROW) has_borrow=1;
+    if(has_borrow) {
+        MPI_Win_create_dynamic(MPI_INFO_NULL,MPI_COMM_WORLD,&ctx->dynamic_window);
+        MPI_Win_lock_all(0,ctx->dynamic_window);
+    }
+    guard_context=ctx; ctca_set_wait_guard(guard_wait);
+    record_status(ctx,"open",NULL,1);
     return COTOCOA_OK;
 }
 MPI_Comm cotocoa_comm(const cotocoa_context *ctx) { return ctx ? ctx->comm : MPI_COMM_NULL; }
@@ -222,16 +294,74 @@ static int validate_array(const ctco_connection *c,const cotocoa_array_view *a,
             return fail(error,COTOCOA_INVALID,"send %s: overflowing stride",c->name);
         span+=(uint64_t)(a->shape[d]-1)*stride;
     }
+    if(span>PTRDIFF_MAX-ctco_itemsize(c->dtype))
+        return fail(error,COTOCOA_INVALID,"send %s: overflowing memory extent",c->name);
     return COTOCOA_OK;
 }
+
+static void attachment_release(cotocoa_context *ctx,attachment *loan)
+{
+    if(!loan || --loan->references) return;
+    MPI_Win_detach(ctx->dynamic_window,loan->base);
+    attachment **link=&ctx->attachments;
+    while(*link && *link!=loan) link=&(*link)->next;
+    if(*link) *link=loan->next;
+    free(loan);
+}
+static void retire_slot(cotocoa_context *ctx,route_state *r,int slot)
+{
+    if(!r->loans || !r->loans[slot]) return;
+    attachment_release(ctx,r->loans[slot]);
+    r->loans[slot]=NULL;
+}
+static void retire_completed(cotocoa_context *ctx)
+{
+    if(!ctx || ctx->role!=CTCO_PRODUCER || ctx->dynamic_window==MPI_WIN_NULL) return;
+    for(int i=0;i<ctx->plan.connection_count;++i) {
+        route_state *r=&ctx->routes[i];
+        if(!r->loans) continue;
+        for(int s=0;s<ctx->plan.connections[i].slots;++s)
+            if(r->loans[s] && (!r->handles[s] || CTCAR_test(r->handles[s]))) retire_slot(ctx,r,s);
+    }
+}
+static attachment *attachment_acquire(cotocoa_context *ctx,const cotocoa_array_view *a,cotocoa_error *error)
+{
+    int64_t lower=0,upper=0;
+    for(int d=0;d<a->ndim;++d) {
+        int64_t extent=(a->shape[d]-1)*a->strides[d];
+        if(extent<0) lower+=extent; else upper+=extent;
+    }
+    size_t unit=ctco_itemsize(a->dtype);
+    uintptr_t address=(uintptr_t)a->data;
+    if(address<(uintptr_t)(-lower) || address>UINTPTR_MAX-unit || (uint64_t)upper>UINTPTR_MAX-address-unit) {
+        fail(error,COTOCOA_INVALID,"borrowed address range overflows"); return NULL;
+    }
+    uintptr_t start=address-(uintptr_t)(-lower);
+    size_t bytes=(size_t)(upper-lower)+(size_t)unit;
+    for(attachment *p=ctx->attachments;p;p=p->next) {
+        uintptr_t begin=(uintptr_t)p->base,end=begin+p->bytes;
+        if(start>=begin && start<=end && bytes<=end-start) { ++p->references; return p; }
+        if(start<end && begin<start+bytes) {
+            fail(error,COTOCOA_INVALID,"borrowed regions overlap without sharing an existing attachment; wait for the older ticket");
+            return NULL;
+        }
+    }
+    attachment *p=calloc(1,sizeof(*p));
+    if(!p) { fail(error,COTOCOA_MEMORY,"cannot allocate borrowed attachment"); return NULL; }
+    p->base=(void *)start; p->bytes=bytes; p->references=1;
+    MPI_Win_attach(ctx->dynamic_window,p->base,(MPI_Aint)bytes);
+    p->next=ctx->attachments; ctx->attachments=p;
+    return p;
+}
 static int validate_port(cotocoa_context *ctx,const char *port,int kind,const cotocoa_array_view *a,
-                          const cotocoa_send_options *o,int *matches,cotocoa_error *error)
+                          const cotocoa_send_options *o,int mode,int *matches,cotocoa_error *error)
 {
     *matches=0;
     if(!ctx || ctx->role!=CTCO_PRODUCER || !port) return fail(error,COTOCOA_STATE,"send/submit requires a producer Context and port");
     for(int i=0;i<ctx->plan.connection_count;++i) {
         ctco_connection *c=&ctx->plan.connections[i];
         if(c->producer!=ctx->program || strcmp(c->source_port,port) || c->kind!=kind) continue;
+        if(c->mode!=mode) return fail(error,COTOCOA_INVALID,"port %s requires %s input",port,c->mode ? "borrowed" : "snapshot");
         ++*matches;
         if(ctx->routes[i].sequence==INT64_MAX) return fail(error,COTOCOA_STATE,"connection sequence exhausted");
         int rc=validate_array(c,a,o,error); if(rc) return rc;
@@ -239,9 +369,12 @@ static int validate_port(cotocoa_context *ctx,const char *port,int kind,const co
     if(!*matches) return fail(error,COTOCOA_INVALID,"no %s output port '%s'",kind==CTCO_TASK ? "task" : "stream",port);
     return COTOCOA_OK;
 }
-static int64_t send_one(cotocoa_context *ctx,int index,const cotocoa_array_view *a,const cotocoa_send_options *o)
+static int64_t send_one(cotocoa_context *ctx,int index,const cotocoa_array_view *a,
+                         const cotocoa_send_options *o,attachment *loan)
 {
     ctco_connection *c=&ctx->plan.connections[index]; route_state *r=&ctx->routes[index];
+    ctx->current_connection=index; ctx->current_step=o->step;
+    record_status(ctx,"send",NULL,0);
     int slot=r->next_slot;
     if(c->delivery==CTCO_LATEST) {
         slot=-1;
@@ -257,28 +390,41 @@ static int64_t send_one(cotocoa_context *ctx,int index,const cotocoa_array_view 
                 if(CTCAR_test(r->handles[s])) { slot=s; break; }
         }
     } else if(r->handles[slot]) CTCAR_wait(r->handles[slot]);
-    char *dest=r->buffer+(size_t)slot*c->bytes;
-    const char *base=a->data; size_t n=0,unit=ctco_itemsize(c->dtype);
-    for(int64_t k=0;k<c->shape[2];++k) for(int64_t j=0;j<c->shape[1];++j) for(int64_t i=0;i<c->shape[0];++i)
-        memcpy(dest+n++*unit,base+i*a->strides[0]+j*a->strides[1]+k*a->strides[2],unit);
-    ctca_sync_area(r->area);
+    retire_slot(ctx,r,slot);
+    if(loan) {
+        ++loan->references; r->loans[slot]=loan;
+        MPI_Win_sync(ctx->dynamic_window);
+    } else {
+        char *dest=r->buffer+(size_t)slot*c->bytes;
+        const char *base=a->data; size_t n=0,unit=ctco_itemsize(c->dtype);
+        for(int64_t k=0;k<c->shape[2];++k) for(int64_t j=0;j<c->shape[1];++j) for(int64_t i=0;i<c->shape[0];++i)
+            memcpy(dest+n++*unit,base+i*a->strides[0]+j*a->strides[1]+k*a->strides[2],unit);
+        ctca_sync_area(r->area);
+    }
     int h[HEADER_WORDS]={0};
     h[0]=MAGIC; h[1]=2; h[2]=index+1; h[3]=slot; h[4]=ctx->source_rank; h[5]=!!o->has_time;
     put64(h,6,(uint64_t)++r->sequence); put64(h,8,(uint64_t)o->step);
     uint64_t time_bits; memcpy(&time_bits,&o->time,sizeof(time_bits)); put64(h,10,time_bits);
     for(int d=0;d<3;++d) { put64(h,12+d*2,(uint64_t)o->offset[d]); put64(h,18+d*2,(uint64_t)c->shape[d]); }
     put64(h,24,c->elements); digest_words(ctx->plan.digest,h+26); h[34]=c->dtype; h[35]=c->ndim;
+    h[38]=c->mode;
+    if(loan) {
+        MPI_Aint address; MPI_Get_address(a->data,&address);
+        put64(h,36,(uint64_t)address);
+        for(int d=0;d<3;++d) put64(h,39+d*2,(uint64_t)a->strides[d]);
+    }
     CTCAR_sendreq_hdl(h,HEADER_WORDS,&r->handles[slot]); r->next_slot=(slot+1)%c->slots;
+    ++ctx->sent; record_status(ctx,"sent",NULL,0);
     return r->handles[slot];
 }
 int cotocoa_send(cotocoa_context *ctx,const char *name,const cotocoa_array_view *a,
                  const cotocoa_send_options *o,cotocoa_error *error)
 {
     cotocoa_send_options defaults=cotocoa_send_defaults(); if(!o) o=&defaults;
-    int matches,rc=validate_port(ctx,name,CTCO_STREAM,a,o,&matches,error); if(rc) return rc;
+    int matches,rc=validate_port(ctx,name,CTCO_STREAM,a,o,CTCO_SNAPSHOT,&matches,error); if(rc) return rc;
     for(int i=0;i<ctx->plan.connection_count;++i) {
         ctco_connection *c=&ctx->plan.connections[i];
-        if(c->producer==ctx->program && c->kind==CTCO_STREAM && !strcmp(c->source_port,name)) send_one(ctx,i,a,o);
+        if(c->producer==ctx->program && c->kind==CTCO_STREAM && !strcmp(c->source_port,name)) send_one(ctx,i,a,o,NULL);
     }
     return COTOCOA_OK;
 }
@@ -287,30 +433,69 @@ int cotocoa_submit(cotocoa_context *ctx,const char *name,const cotocoa_array_vie
 {
     if(!out) return fail(error,COTOCOA_INVALID,"submit requires a ticket output"); *out=NULL;
     cotocoa_send_options defaults=cotocoa_send_defaults(); if(!o) o=&defaults;
-    int matches,rc=validate_port(ctx,name,CTCO_TASK,a,o,&matches,error); if(rc) return rc;
+    int matches,rc=validate_port(ctx,name,CTCO_TASK,a,o,CTCO_SNAPSHOT,&matches,error); if(rc) return rc;
     if(matches!=1) return fail(error,COTOCOA_INVALID,"task port must have one destination");
     cotocoa_ticket *ticket=calloc(1,sizeof(*ticket));
     if(!ticket) return fail(error,COTOCOA_MEMORY,"cannot allocate task ticket");
+    ticket->handles=calloc(1,sizeof(int64_t));
+    if(!ticket->handles) { free(ticket); return fail(error,COTOCOA_MEMORY,"cannot allocate ticket handles"); }
+    ticket->handle_count=1;
     for(int i=0;i<ctx->plan.connection_count;++i) {
         ctco_connection *c=&ctx->plan.connections[i];
         if(c->producer==ctx->program && c->kind==CTCO_TASK && !strcmp(c->source_port,name)) {
-            ticket->handle=send_one(ctx,i,a,o); break;
+            ticket->handles[0]=send_one(ctx,i,a,o,NULL); break;
         }
     }
     ticket->context=ctx; ticket->references=1; ticket->next=ctx->tickets; ctx->tickets=ticket; *out=ticket;
     return COTOCOA_OK;
 }
+
+static int borrow_impl(cotocoa_context *ctx,const char *name,int kind,const cotocoa_array_view *a,
+                         const cotocoa_send_options *o,cotocoa_ticket **out,cotocoa_error *error)
+{
+    if(!out) return fail(error,COTOCOA_INVALID,"borrow requires a ticket output");
+    *out=NULL;
+    cotocoa_send_options defaults=cotocoa_send_defaults(); if(!o) o=&defaults;
+    int matches,rc=validate_port(ctx,name,kind,a,o,CTCO_BORROW,&matches,error); if(rc) return rc;
+    cotocoa_ticket *t=calloc(1,sizeof(*t));
+    if(!t) return fail(error,COTOCOA_MEMORY,"cannot allocate borrowed ticket");
+    t->handles=calloc((size_t)matches,sizeof(int64_t));
+    if(!t->handles) { free(t); return fail(error,COTOCOA_MEMORY,"cannot allocate borrowed handles"); }
+    retire_completed(ctx);
+    attachment *guard=attachment_acquire(ctx,a,error);
+    if(!guard) { free(t->handles); free(t); return error ? error->code : COTOCOA_INVALID; }
+    int n=0;
+    for(int i=0;i<ctx->plan.connection_count;++i) {
+        ctco_connection *c=&ctx->plan.connections[i];
+        if(c->producer==ctx->program && c->kind==kind && !strcmp(c->source_port,name))
+            t->handles[n++]=send_one(ctx,i,a,o,guard);
+    }
+    attachment_release(ctx,guard);
+    t->handle_count=n; t->references=1; t->context=ctx;
+    t->next=ctx->tickets; ctx->tickets=t; *out=t;
+    return COTOCOA_OK;
+}
+int cotocoa_borrow(cotocoa_context *ctx,const char *name,const cotocoa_array_view *a,
+                   const cotocoa_send_options *o,cotocoa_ticket **out,cotocoa_error *error)
+{ return borrow_impl(ctx,name,CTCO_STREAM,a,o,out,error); }
+int cotocoa_submit_borrow(cotocoa_context *ctx,const char *name,const cotocoa_array_view *a,
+                          const cotocoa_send_options *o,cotocoa_ticket **out,cotocoa_error *error)
+{ return borrow_impl(ctx,name,CTCO_TASK,a,o,out,error); }
 int cotocoa_ticket_test(cotocoa_ticket *t,int *done,cotocoa_error *error)
 {
     if(!t || !done) return fail(error,COTOCOA_INVALID,"ticket test requires ticket and output");
-    if(!t->completed && t->context) t->completed=CTCAR_test(t->handle);
+    if(!t->completed && t->context) {
+        t->completed=1;
+        for(int i=0;i<t->handle_count;++i) if(!CTCAR_test(t->handles[i])) t->completed=0;
+    }
+    retire_completed(t->context);
     *done=t->completed; return COTOCOA_OK;
 }
 int cotocoa_ticket_wait(cotocoa_ticket *t,cotocoa_error *error)
 {
     if(!t) return fail(error,COTOCOA_INVALID,"wait requires a task ticket");
-    if(!t->completed && t->context) CTCAR_wait(t->handle);
-    t->completed=1; return COTOCOA_OK;
+    if(!t->completed && t->context) for(int i=0;i<t->handle_count;++i) CTCAR_wait(t->handles[i]);
+    t->completed=1; retire_completed(t->context); return COTOCOA_OK;
 }
 void cotocoa_ticket_retain(cotocoa_ticket *t) { if(t) ++t->references; }
 void cotocoa_ticket_release(cotocoa_ticket *t)
@@ -321,7 +506,7 @@ void cotocoa_ticket_release(cotocoa_ticket *t)
         while(*link && *link!=t) link=&(*link)->next;
         if(*link) *link=t->next;
     }
-    free(t);
+    free(t->handles); free(t);
 }
 int cotocoa_flush(cotocoa_context *ctx,cotocoa_error *error)
 {
@@ -329,7 +514,10 @@ int cotocoa_flush(cotocoa_context *ctx,cotocoa_error *error)
     for(int i=0;i<ctx->plan.connection_count;++i) {
         ctco_connection *c=&ctx->plan.connections[i]; route_state *r=&ctx->routes[i];
         if(c->producer!=ctx->program) continue;
-        for(int s=0;s<c->slots;++s) { if(r->handles[s]) CTCAR_wait(r->handles[s]); r->handles[s]=0; }
+        for(int s=0;s<c->slots;++s) {
+            if(r->handles[s]) CTCAR_wait(r->handles[s]);
+            retire_slot(ctx,r,s); r->handles[s]=0;
+        }
     }
     return COTOCOA_OK;
 }
@@ -341,12 +529,39 @@ static int validate_header(cotocoa_context *ctx,const int *h,int source,cotocoa_
     ctco_connection *c=&ctx->plan.connections[h[2]-1]; ctco_program *a=&ctx->plan.programs[c->producer];
     if(h[3]<0 || h[3]>=c->slots || source<a->source_offset || source>=a->source_offset+a->ranks || h[4]!=source ||
        (h[5]!=0 && h[5]!=1) || get64(h,6)<1 || get64(h,6)>INT64_MAX || get64(h,24)!=c->elements ||
-       memcmp(h+26,digest,sizeof(digest)) || h[34]!=c->dtype || h[35]!=c->ndim)
+       memcmp(h+26,digest,sizeof(digest)) || h[34]!=c->dtype || h[35]!=c->ndim || h[38]!=c->mode)
         return fail(error,COTOCOA_INVALID,"invalid header for %s from source %d",c->name,source);
     for(int d=0;d<3;++d) if(get64(h,18+d*2)!=(uint64_t)c->shape[d] ||
         get64(h,12+d*2)>(uint64_t)(c->global_shape[d]-c->shape[d]))
             return fail(error,COTOCOA_INVALID,"invalid shape/offset for %s",c->name);
+    uint64_t bits=get64(h,10); double time; memcpy(&time,&bits,sizeof(time));
+    if(h[5] && !isfinite(time)) return fail(error,COTOCOA_INVALID,"non-finite time for %s",c->name);
+    if(c->mode==CTCO_BORROW) {
+        cotocoa_array_view v={.data=(void *)(uintptr_t)get64(h,36),.dtype=c->dtype,.ndim=c->ndim};
+        cotocoa_send_options o=cotocoa_send_defaults();
+        for(int d=0;d<3;++d) {
+            v.shape[d]=c->shape[d]; v.strides[d]=(int64_t)get64(h,39+2*d);
+            o.offset[d]=(int64_t)get64(h,12+2*d);
+        }
+        if(validate_array(c,&v,&o,error)) return COTOCOA_INVALID;
+    }
     return COTOCOA_OK;
+}
+static void read_borrowed(cotocoa_context *ctx,const ctco_connection *c,const int *h,int source,void *out)
+{
+    MPI_Datatype target;
+    MPI_Type_contiguous((int)ctco_itemsize(c->dtype),MPI_BYTE,&target);
+    for(int d=0;d<c->ndim;++d) {
+        MPI_Datatype next;
+        MPI_Aint stride=(MPI_Aint)(int64_t)get64(h,39+d*2);
+        MPI_Type_create_hvector((int)c->shape[d],1,stride,target,&next);
+        MPI_Type_free(&target); target=next;
+    }
+    MPI_Type_commit(&target);
+    MPI_Aint address=(MPI_Aint)get64(h,36);
+    MPI_Get(out,(int)c->bytes,MPI_BYTE,source,address,1,target,ctx->dynamic_window);
+    MPI_Win_flush(source,ctx->dynamic_window);
+    MPI_Type_free(&target);
 }
 static int receive_impl(cotocoa_context *ctx,const char *name,int kind,cotocoa_message **out,cotocoa_error *error)
 {
@@ -360,10 +575,12 @@ static int receive_impl(cotocoa_context *ctx,const char *name,int kind,cotocoa_m
     if(bad) fail(error,COTOCOA_STATE,"receive: incomplete message or multiple ports/kinds; use receive-any");
     collective_check(ctx,bad,error,ctx->comm); *out=NULL;
     if(ctx->ended) return COTOCOA_END;
+    record_status(ctx,"receive",NULL,0);
     int h[HEADER_WORDS],source; CTCAW_pollreq(&source,h,HEADER_WORDS);
     if(CTCAW_isfin()) { ctx->ended=1; return COTOCOA_END; }
     bad=validate_header(ctx,h,source,error)!=COTOCOA_OK; collective_check(ctx,bad,error,ctx->comm);
     int index=h[2]-1; ctco_connection *c=&ctx->plan.connections[index]; route_state *r=&ctx->routes[index];
+    ctx->current_connection=index; ctx->current_step=(int64_t)get64(h,8);
     ctco_program *a=&ctx->plan.programs[c->producer]; int local_source=source-a->source_offset;
     int64_t sequence=(int64_t)get64(h,6);
     bad=c->consumer!=ctx->program || !r->received_sequences;
@@ -377,7 +594,8 @@ static int receive_impl(cotocoa_context *ctx,const char *name,int kind,cotocoa_m
     collective_check(ctx,bad,error,ctx->comm);
     if(ctx->rank==0) {
         size_t offset=(size_t)h[3]*c->elements;
-        if(c->dtype==COTOCOA_FLOAT64) CTCAW_readarea_real8(r->area,source,offset,c->elements,message->data);
+        if(c->mode==CTCO_BORROW) read_borrowed(ctx,c,h,source,message->data);
+        else if(c->dtype==COTOCOA_FLOAT64) CTCAW_readarea_real8(r->area,source,offset,c->elements,message->data);
         else if(c->dtype==COTOCOA_FLOAT32) CTCAW_readarea_real4(r->area,source,offset,c->elements,message->data);
         else CTCAW_readarea_int(r->area,source,offset,c->elements,message->data);
     }
@@ -386,6 +604,7 @@ static int receive_impl(cotocoa_context *ctx,const char *name,int kind,cotocoa_m
     m->step=(int64_t)get64(h,8); m->sequence=sequence; m->source_rank=local_source;
     m->has_time=h[5]; m->dtype=c->dtype; m->ndim=c->ndim;
     m->kind=c->kind; m->connection_id=index; m->source_count=a->ranks;
+    m->delivery=c->delivery; m->mode=c->mode;
     uint64_t bits=get64(h,10); memcpy(&m->time,&bits,sizeof(m->time));
     memcpy(m->shape,c->shape,sizeof(m->shape)); memcpy(m->global_shape,c->global_shape,sizeof(m->global_shape));
     memcpy(m->axes,c->axes,sizeof(m->axes)); memcpy(m->units,c->units,sizeof(m->units));
@@ -393,6 +612,7 @@ static int receive_impl(cotocoa_context *ctx,const char *name,int kind,cotocoa_m
     memcpy(m->port,c->target_port,sizeof(m->port)); memcpy(m->source,a->name,sizeof(m->source));
     for(int d=0;d<3;++d) m->offset[d]=(int64_t)get64(h,12+d*2);
     r->received_sequences[local_source]=sequence; ctx->active=message; *out=message;
+    ++ctx->received; record_status(ctx,"processing",NULL,0);
     return COTOCOA_OK;
 }
 int cotocoa_receive(cotocoa_context *ctx,const char *name,cotocoa_message **out,cotocoa_error *e)
@@ -410,7 +630,9 @@ int cotocoa_complete(cotocoa_message *m,cotocoa_error *e)
 {
     if(!m) return fail(e,COTOCOA_INVALID,"complete requires a message");
     if(m->completed) return fail(e,COTOCOA_STATE,"message already completed");
-    CTCAW_complete(); m->context->active=NULL; m->context=NULL; m->completed=1; return COTOCOA_OK;
+    CTCAW_complete();
+    ++m->context->completed; record_status(m->context,"completed",NULL,0);
+    m->context->active=NULL; m->context=NULL; m->completed=1; return COTOCOA_OK;
 }
 void cotocoa_message_release(cotocoa_message *m)
 {
@@ -438,12 +660,15 @@ int cotocoa_couple(cotocoa_context *ctx,cotocoa_error *e)
             if(c->delivery!=CTCO_LATEST || source<p->source_offset || source>=p->source_offset+p->ranks) {
                 fail(e,COTOCOA_INVALID,"invalid latest control source/policy"); cotocoa_abort(ctx,e);
             }
-            ctca_drop_queued(h[2],source);
+            ctx->dropped+=(uint64_t)ctca_drop_queued(h[2],source);
             continue;
         }
         if(validate_header(ctx,h,source,e)) cotocoa_abort(ctx,e);
-        if(ctx->plan.connections[h[2]-1].delivery==CTCO_LATEST) ctca_drop_queued(h[2],source);
+        ctx->current_connection=h[2]-1; ctx->current_step=(int64_t)get64(h,8);
+        ++ctx->received;
+        if(ctx->plan.connections[h[2]-1].delivery==CTCO_LATEST) ctx->dropped+=(uint64_t)ctca_drop_queued(h[2],source);
         CTCAC_enqreq(info,ctx->plan.connections[h[2]-1].consumer+1,h,HEADER_WORDS);
+        record_status(ctx,"dispatched",NULL,0);
     }
     return COTOCOA_OK;
 }
@@ -458,10 +683,17 @@ int cotocoa_close(cotocoa_context *ctx,cotocoa_error *e)
     MPI_Comm_free(&ctx->comm);
     if(ctx->role==CTCO_PRODUCER) CTCAR_finalize();
     else if(ctx->role==CTCO_COUPLER) CTCAC_finalize(); else CTCAW_finalize();
+    if(ctx->dynamic_window!=MPI_WIN_NULL) {
+        MPI_Win_unlock_all(ctx->dynamic_window);
+        MPI_Win_free(&ctx->dynamic_window);
+    }
+    record_status(ctx,"closed",NULL,1);
+    ctca_set_wait_guard(NULL); guard_context=NULL;
     cotocoa_ticket *t=ctx->tickets;
     while(t) { cotocoa_ticket *next=t->next; t->completed=1; t->context=NULL; t->next=NULL; t=next; }
     for(int i=0;i<ctx->plan.connection_count;++i) {
         free(ctx->routes[i].buffer); free(ctx->routes[i].handles); free(ctx->routes[i].received_sequences);
+        free(ctx->routes[i].loans);
     }
     int owns=ctx->owns_mpi; free(ctx->routes); free(ctx); if(owns) MPI_Finalize(); return COTOCOA_OK;
 }

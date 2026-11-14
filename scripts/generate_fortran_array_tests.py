@@ -11,7 +11,11 @@ program typed
   implicit none
   type(ctca_context) :: ctx
   type(ctca_message) :: message
-  integer :: dtype, ndim, rank, ierr
+  type(ctca_ticket) :: ticket
+  type(ctca_assembler) :: assembler
+  type(ctca_message) :: frame
+  logical :: assemble
+  integer :: dtype, ndim, rank, ierr, loan
   character(len=1024) :: name, config, env
   call get_command_argument(1,name)
   call get_command_argument(2,config)
@@ -19,6 +23,11 @@ program typed
   read(env,*) dtype
   call get_environment_variable('COTOCOA_TEST_NDIM',env)
   read(env,*) ndim
+  call get_environment_variable('COTOCOA_TEST_LOAN',env,status=ierr)
+  loan=0
+  if (ierr==0) read(env,*) loan
+  call get_environment_variable('COTOCOA_TEST_ASSEMBLE',env,status=ierr)
+  assemble=ierr==0
   call ctx%open(trim(name),config=trim(config))
   call MPI_Comm_rank(ctx%comm(),rank,ierr)
   select case(dtype*10+ndim)
@@ -54,22 +63,35 @@ contains
             ends = '      end do\n'*ndim
             text += f'''
   subroutine array_{dtype}_{ndim}()
-    {declaration} :: field({storage})
+    {declaration}, target, asynchronous :: field({storage})
     {declaration}, allocatable :: received({dims})
     integer(c_int64_t) :: offset({ndim})
-    integer :: step, source, i, j, k, count
-    logical :: available
+    integer :: step, source, i, j, k, count, frames
+    logical :: available, ready
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
 {loops}        field({store_at}) = {expected}
 {ends}        offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
-        call ctx%send('field',field({slice_}),step=int(step,c_int64_t),offset=offset)
+        if (loan==1) then
+          call ctx%borrow('field',field({slice_}),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else if (loan==2) then
+          call ctx%submit_borrow('field',field({slice_}),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else
+          call ctx%send('field',field({slice_}),step=int(step,c_int64_t),offset=offset)
+        end if
         field=0
+        if (assemble) call MPI_Barrier(ctx%comm(),ierr)
       end do
     else
       count=0
+      frames=0
+      if (assemble) call assembler%open(2,1048576_c_int64_t)
       do
         call ctx%receive('field',message,has_message=available)
         if (.not. available) exit
@@ -79,10 +101,26 @@ contains
         call require(message%dtype()=={dtype} .and. message%ndim()=={ndim},'type and rank')
         call require(all(shape(received)==[{expected_shape}]),'shape')
 {loops}        call require(received({at}) == {expected},'noncontiguous snapshot')
-{ends}        call message%complete()
+{ends}        if (assemble) then
+          call assembler%push(message,frame,ready)
+          if (ready) then
+            call frame%copy_to(received)
+            call require(size(received,1)==6,'global frame shape')
+{loops.replace('i=1,3','i=1,6')}        source=(i-1)/3
+            call require(received({at}) == {expected.replace('(i-1)*100','mod(i-1,3)*100')},'global frame values')
+{ends}            frames=frames+1
+            call frame%release()
+          end if
+        end if
+        call message%complete()
         count=count+1
       end do
       call require(count==16,'all delivery count')
+      if (assemble) then
+        call assembler%finish()
+        call assembler%close()
+        call require(frames==8,'frame count')
+      end if
       print *, 'PASS typed Fortran dtype={dtype} ndim={ndim} rank=',rank
     end if
   end subroutine

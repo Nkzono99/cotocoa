@@ -9,6 +9,10 @@
 #include "ctca_internal.h"
 
 MPI_Comm CTCA_subcomm;
+static void (*adapter_wait_guard)(const char *, double);
+void ctca_set_wait_guard(void (*guard)(const char *, double)) { adapter_wait_guard=guard; }
+static void wait_tick(const char *operation,double started)
+{ if(adapter_wait_guard) adapter_wait_guard(operation,started); }
 
 #define MAX_TRANSFER_SIZE (1024*1024*1024)
 #define DEF_MAXNUMAREAS 10
@@ -477,6 +481,12 @@ int req_sendreq(int *intparams, int numintparams, void *data, size_t datasize, i
         senddata(data, datasize, rank_cpl, TAG_DAT, MPI_COMM_WORLD);
 
     //  wait for a reply from the coupler
+    double reply_started=MPI_Wtime();
+    int reply_ready=0;
+    while(!reply_ready) {
+        MPI_Iprobe(rank_cpl,TAG_REP,MPI_COMM_WORLD,&reply_ready,MPI_STATUS_IGNORE);
+        if(!reply_ready) wait_tick("coupler-ack",reply_started);
+    }
     MPI_Recv(&reply, 1, MPI_INT, rank_cpl, TAG_REP, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
     return 0;
@@ -743,6 +753,7 @@ int CTCAR_wait(int64_t hdl)
         MPI_Abort(MPI_COMM_WORLD, 0);
     }
 
+    double guard_started=MPI_Wtime();
     do {
         MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &f, MPI_STATUS_IGNORE);
         MPI_Win_sync(win_reqstat);
@@ -752,6 +763,7 @@ int CTCAR_wait(int64_t hdl)
                 flag = 0;
                 break;
             }
+        if(!flag) wait_tick("ticket-completion",guard_started);
     } while (flag == 0);
 
     if (prof_flag == 1) 
@@ -1486,7 +1498,9 @@ int cpl_pollreq(int *reqinfo, int *fromrank, int *intparam, int intparamnum, voi
     if (prof_flag == 1)
         t0 = MPI_Wtime();
 
+    double guard_started=MPI_Wtime();
     while (1) {
+        wait_tick("coupler-poll",guard_started);
         cpl_progress();
 
         numpendingwrks = 0;
@@ -2213,7 +2227,12 @@ int wrk_pollreq(int *fromrank, int *intparam, int intparamnum, void *data, size_
     MPI_Comm_rank(CTCA_subcomm, &submyrank);
 
     if (submyrank == 0) {
-        MPI_Probe(rank_cpl, MPI_ANY_TAG, MPI_COMM_WORLD, &stat);
+        double guard_started=MPI_Wtime();
+        int ready=0;
+        while(!ready) {
+            MPI_Iprobe(rank_cpl,MPI_ANY_TAG,MPI_COMM_WORLD,&ready,&stat);
+            if(!ready) wait_tick("worker-poll",guard_started);
+        }
         switch (stat.MPI_TAG) {
         case TAG_REQ:
             MPI_Get_count(&stat, MPI_BYTE, &reqsize);

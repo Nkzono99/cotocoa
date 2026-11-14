@@ -85,6 +85,26 @@ def generate():
                 '    call ticket%release()\n    rc = c_submit(self%handle, trim(name)//c_null_char, &\n' +
                 '                  view, options, ticket%handle, error)')
             parts.append('\n'+submit+'\n')
+    for suffix in ('real64','real32','int32'):
+        for rank in (1,2,3):
+            text=''.join(parts)
+            start=text.index(f'  subroutine submit_{suffix}_{rank}(')
+            end=text.index('  end subroutine',start)+len('  end subroutine')
+            template=text[start:end].replace('contiguous, target','target, asynchronous')
+            stride_code=''
+            for dim in range(rank):
+                neighbor=['1']*rank
+                neighbor[dim]='2'
+                stride_code+=f'''    if (size(array)>0 .and. size(array,{dim+1})>1) then
+      view%strides({dim+1})=int(transfer(c_loc(array({', '.join(neighbor)})),0_c_intptr_t) - &
+                            transfer(data,0_c_intptr_t),c_int64_t)
+    end if
+'''
+            template=template.replace('    options%step = 0_c_int64_t',stride_code+'    options%step = 0_c_int64_t')
+            for operation,native in (('borrow','c_borrow'),('submit_borrow','c_submit_borrow')):
+                borrowed=template.replace(f'submit_{suffix}_{rank}(',f'{operation}_{suffix}_{rank}(')
+                borrowed=borrowed.replace('rc = c_submit(',f'rc = {native}(')
+                parts.append('\n'+borrowed+'\n')
     return ''.join(parts)
 
 

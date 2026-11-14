@@ -2,9 +2,11 @@ module cotocoa
   use, intrinsic :: iso_c_binding
   implicit none
   private
-  public :: ctca_context, ctca_message, ctca_status, ctca_ticket
+  public :: ctca_context, ctca_message, ctca_status, ctca_ticket, ctca_assembler
   integer, parameter, public :: COTOCOA_FLOAT64=1, COTOCOA_FLOAT32=2, COTOCOA_INT32=3
   integer, parameter, public :: COTOCOA_STREAM=0, COTOCOA_TASK=1
+  integer, parameter, public :: COTOCOA_ALL=0, COTOCOA_LATEST=1
+  integer, parameter, public :: COTOCOA_SNAPSHOT=0, COTOCOA_BORROW=1
 
   type, bind(c) :: c_error
     integer(c_int) :: code
@@ -33,6 +35,7 @@ module cotocoa
     integer(c_int) :: dtype, ndim
     integer(c_int) :: kind, connection_id, source_count
     character(c_char) :: name(64), port(64), source(64)
+    integer(c_int) :: delivery, mode
   end type
 
   type :: ctca_status
@@ -71,6 +74,18 @@ module cotocoa
     generic :: submit => submit_real64_1, submit_real64_2, submit_real64_3, &
                         submit_real32_1, submit_real32_2, submit_real32_3, &
                         submit_int32_1, submit_int32_2, submit_int32_3
+    procedure, private :: borrow_real64_1, borrow_real64_2, borrow_real64_3
+    procedure, private :: borrow_real32_1, borrow_real32_2, borrow_real32_3
+    procedure, private :: borrow_int32_1, borrow_int32_2, borrow_int32_3
+    generic :: borrow => borrow_real64_1, borrow_real64_2, borrow_real64_3, &
+                        borrow_real32_1, borrow_real32_2, borrow_real32_3, &
+                        borrow_int32_1, borrow_int32_2, borrow_int32_3
+    procedure, private :: submit_borrow_real64_1, submit_borrow_real64_2, submit_borrow_real64_3
+    procedure, private :: submit_borrow_real32_1, submit_borrow_real32_2, submit_borrow_real32_3
+    procedure, private :: submit_borrow_int32_1, submit_borrow_int32_2, submit_borrow_int32_3
+    generic :: submit_borrow => submit_borrow_real64_1, submit_borrow_real64_2, submit_borrow_real64_3, &
+                               submit_borrow_real32_1, submit_borrow_real32_2, submit_borrow_real32_3, &
+                               submit_borrow_int32_1, submit_borrow_int32_2, submit_borrow_int32_3
     procedure :: receive => context_receive
     procedure :: next_task => context_next_task
     procedure :: flush => context_flush
@@ -88,6 +103,7 @@ module cotocoa
                          copy_real32_1, copy_real32_2, copy_real32_3, &
                          copy_int32_1, copy_int32_2, copy_int32_3
     procedure :: complete => message_complete
+    procedure :: release => message_release
     procedure :: step => message_step
     procedure :: sequence => message_sequence
     procedure :: source_rank => message_source_rank
@@ -106,9 +122,67 @@ module cotocoa
     procedure :: port => message_port
     procedure :: source => message_source
     procedure :: source_count => message_source_count
+    procedure :: delivery => message_delivery
+    procedure :: mode => message_mode
+  end type
+
+  type :: ctca_assembler
+    private
+    type(c_ptr) :: handle=c_null_ptr
+  contains
+    procedure :: open => assembler_open
+    procedure :: push => assembler_push
+    procedure :: finish => assembler_finish
+    procedure :: close => assembler_close
+    final :: assembler_finalize
   end type
 
   interface
+    function c_assembler_create(steps,bytes,handle,error) bind(c,name='cotocoa_assembler_create') result(rc)
+      import
+      integer(c_int), value :: steps
+      integer(c_int64_t), value :: bytes
+      type(c_ptr), intent(out) :: handle
+      type(c_error), intent(out) :: error
+      integer(c_int) :: rc
+    end function
+    function c_assembler_push(handle,message,frame,error) bind(c,name='cotocoa_assembler_push') result(rc)
+      import
+      type(c_ptr), value :: handle,message
+      type(c_ptr), intent(out) :: frame
+      type(c_error), intent(out) :: error
+      integer(c_int) :: rc
+    end function
+    function c_assembler_finish(handle,error) bind(c,name='cotocoa_assembler_finish') result(rc)
+      import
+      type(c_ptr), value :: handle
+      type(c_error), intent(out) :: error
+      integer(c_int) :: rc
+    end function
+    subroutine c_assembler_release(handle) bind(c,name='cotocoa_assembler_release')
+      import
+      type(c_ptr), value :: handle
+    end subroutine
+    function c_borrow(ctx,name,view,options,ticket,error) bind(c,name='cotocoa_borrow') result(rc)
+      import
+      type(c_ptr), value :: ctx
+      character(kind=c_char), intent(in) :: name(*)
+      type(c_view), intent(in) :: view
+      type(c_options), intent(in) :: options
+      type(c_ptr), intent(out) :: ticket
+      type(c_error), intent(out) :: error
+      integer(c_int) :: rc
+    end function
+    function c_submit_borrow(ctx,name,view,options,ticket,error) bind(c,name='cotocoa_submit_borrow') result(rc)
+      import
+      type(c_ptr), value :: ctx
+      character(kind=c_char), intent(in) :: name(*)
+      type(c_view), intent(in) :: view
+      type(c_options), intent(in) :: options
+      type(c_ptr), intent(out) :: ticket
+      type(c_error), intent(out) :: error
+      integer(c_int) :: rc
+    end function
     function c_submit(ctx,name,view,options,ticket,error) bind(c,name='cotocoa_submit') result(rc)
       import
       type(c_ptr), value :: ctx
@@ -418,6 +492,70 @@ contains
     call report(rc, error, c_null_ptr, status)
   end subroutine
 
+  subroutine message_release(self)
+    class(ctca_message), intent(inout) :: self
+    if(c_associated(self%handle)) call c_release(self%handle)
+    self%handle=c_null_ptr
+  end subroutine
+
+  subroutine assembler_open(self,max_pending_steps,max_frame_bytes,status)
+    class(ctca_assembler), intent(inout) :: self
+    integer, intent(in) :: max_pending_steps
+    integer(c_int64_t), intent(in) :: max_frame_bytes
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    integer(c_int) :: rc
+    if(c_associated(self%handle) .or. max_frame_bytes<=0) then
+      call local_error(error,'assembler already open or invalid frame byte limit')
+      rc=-2
+    else
+      rc=c_assembler_create(int(max_pending_steps,c_int),max_frame_bytes,self%handle,error)
+    end if
+    call report(rc,error,c_null_ptr,status)
+  end subroutine
+
+  subroutine assembler_push(self,message,frame,ready,status)
+    class(ctca_assembler), intent(inout) :: self
+    type(ctca_message), intent(in) :: message
+    type(ctca_message), intent(inout) :: frame
+    logical, intent(out) :: ready
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    integer(c_int) :: rc
+    ready=.false.
+    if(c_associated(frame%handle)) then
+      call local_error(error,'release previous frame before assembler push')
+      rc=-2
+    else
+      rc=c_assembler_push(self%handle,message%handle,frame%handle,error)
+      if(rc==0 .and. c_associated(frame%handle)) then
+        rc=c_get_metadata(frame%handle,frame%meta,error)
+        ready=rc==0
+      end if
+    end if
+    call report(rc,error,c_null_ptr,status)
+  end subroutine
+
+  subroutine assembler_finish(self,status)
+    class(ctca_assembler), intent(inout) :: self
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    integer(c_int) :: rc
+    rc=c_assembler_finish(self%handle,error)
+    call report(rc,error,c_null_ptr,status)
+  end subroutine
+
+  subroutine assembler_close(self)
+    class(ctca_assembler), intent(inout) :: self
+    if(c_associated(self%handle)) call c_assembler_release(self%handle)
+    self%handle=c_null_ptr
+  end subroutine
+
+  subroutine assembler_finalize(self)
+    type(ctca_assembler), intent(inout) :: self
+    call self%close()
+  end subroutine
+
   function message_step(self) result(value)
     class(ctca_message), intent(in) :: self
     integer(c_int64_t) :: value
@@ -535,5 +673,15 @@ contains
     class(ctca_message), intent(in) :: self
     character(len=64) :: value
     value=label(self%meta%source)
+  end function
+  function message_delivery(self) result(value)
+    class(ctca_message), intent(in) :: self
+    integer :: value
+    value=self%meta%delivery
+  end function
+  function message_mode(self) result(value)
+    class(ctca_message), intent(in) :: self
+    integer :: value
+    value=self%meta%mode
   end function
 end module cotocoa

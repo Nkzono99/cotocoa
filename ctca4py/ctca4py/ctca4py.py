@@ -3,6 +3,7 @@ import os
 
 import numpy as np
 from mpi4py import MPI
+from ._library import load_library
 
 
 class CTCAWorker:
@@ -30,7 +31,7 @@ class CTCAWorker:
         self.areaid=0    #area id
 
         # load shared library
-        self.c_lib=ctypes.CDLL(os.path.abspath('/home/a/a0238138/ctca4py/ctca4py.so'))
+        self.c_lib=load_library()
 
         # CTCAW_init
         self.c_lib.CTCAW_init.argtypes=[ctypes.c_int,ctypes.c_int]
@@ -157,7 +158,9 @@ class CTCAWorker:
         intparam_c = intparam.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
         intparamnum_c = ctypes.c_int(intparamsnum)
         
-        if datanum==0 or datatype==0:
+        if datanum<0 or datatype not in (self.DAT_INT,self.DAT_REAL4,self.DAT_REAL8):
+            raise ValueError('invalid legacy payload size/type')
+        if datanum==0:
 
             self.c_lib.wrk_pollreq(
                 ctypes.byref(fromrank_c),
@@ -247,27 +250,15 @@ class CTCAWorker:
         return data
     
     def CTCAW_writearea(self,areaid,reqrank,offset,size,data,datatype):
-
-        if not data.flags['C_CONTIGUOUS']:
-            data=np.ascontiguousarray(data)
-        
-        if datatype==self.AREA_INT:
-            data=np.zeros(size,dtype=np.int32)
-            self.c_lib.CTCAW_writearea_int(areaid,reqrank,\
-                                            offset,size,\
-                                            data.ctypes.data_as(ctypes.POINTER(ctypes.c_int)))
-            
-        elif datatype==self.AREA_REAL4:
-            data=np.zeros(size,dtype=np.float32)
-            self.c_lib.CTCAW_writearea_real4(areaid,reqrank,\
-                                            offset,size,\
-                                            data.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
-            
-        elif datatype==self.AREA_REAL4:
-            data=np.zeros(size,dtype=np.float64)
-            self.c_lib.CTCAW_writearea_real8(areaid,reqrank,\
-                                            offset,size,\
-                                            data.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
+        types={self.AREA_INT:(np.int32,ctypes.c_int,'int'),
+               self.AREA_REAL4:(np.float32,ctypes.c_float,'real4'),
+               self.AREA_REAL8:(np.float64,ctypes.c_double,'real8')}
+        if datatype not in types: raise ValueError('invalid legacy area type')
+        dtype,ctype,suffix=types[datatype]
+        array=np.ascontiguousarray(data,dtype=dtype).reshape(-1)
+        if offset<0 or size<0 or size>array.size: raise ValueError('invalid legacy area offset/size')
+        getattr(self.c_lib,'CTCAW_writearea_'+suffix)(areaid,reqrank,offset,size,
+            array.ctypes.data_as(ctypes.POINTER(ctype)))
 
     def CTCAW_isfin(self):
         return self.c_lib.CTCAW_isfin()

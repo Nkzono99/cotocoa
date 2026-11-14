@@ -33,6 +33,8 @@ int main(int argc, char **argv)
     if (argc != 3) return 2;
     int dtype = atoi(getenv("COTOCOA_TEST_DTYPE"));
     int ndim = atoi(getenv("COTOCOA_TEST_NDIM"));
+    int mode = getenv("COTOCOA_TEST_LOAN") ? atoi(getenv("COTOCOA_TEST_LOAN")) : 0;
+    int assemble=getenv("COTOCOA_TEST_ASSEMBLE")!=NULL;
     int64_t shape[3] = {3, ndim>=2 ? 5 : 1, ndim>=3 ? 7 : 1};
     cotocoa_context *ctx = NULL;
     cotocoa_error error = {0};
@@ -53,11 +55,20 @@ int main(int argc, char **argv)
                       -1000000+rank*1000000+step*1000+i*100+j*10+k);
             cotocoa_send_options options = cotocoa_send_defaults();
             options.step=step; options.offset[0]=rank*3;
-            if(cotocoa_send(ctx,"field",&view,&options,&error)) cotocoa_abort(ctx,&error);
+            if(mode) {
+                cotocoa_ticket *ticket=NULL;
+                int rc=mode==2 ? cotocoa_submit_borrow(ctx,"field",&view,&options,&ticket,&error) :
+                                cotocoa_borrow(ctx,"field",&view,&options,&ticket,&error);
+                if(rc || cotocoa_ticket_wait(ticket,&error)) cotocoa_abort(ctx,&error);
+                cotocoa_ticket_release(ticket);
+            } else if(cotocoa_send(ctx,"field",&view,&options,&error)) cotocoa_abort(ctx,&error);
             memset(storage,0,sizeof(storage));
+            if(assemble) MPI_Barrier(cotocoa_comm(ctx));
         }
     } else {
-        int count = 0;
+        int count = 0, frames=0;
+        cotocoa_assembler *assembler=NULL;
+        if(assemble && cotocoa_assembler_create(2,1024*1024,&assembler,&error)) cotocoa_abort(ctx,&error);
         for (;;) {
             cotocoa_message *message;
             int rc=cotocoa_receive(ctx,"field",&message,&error);
@@ -72,11 +83,28 @@ int main(int argc, char **argv)
             for(int k=0;k<shape[2];++k) for(int j=0;j<shape[1];++j) for(int i=0;i<3;++i)
                 require(value((const char *)view.data+i*view.strides[0]+j*view.strides[1]+k*view.strides[2],dtype)
                     == -1000000+m.source_rank*1000000+m.step*1000+i*100+j*10+k,ctx,"signed value/stride");
+            if(assemble) {
+                cotocoa_message *frame=NULL;
+                if(cotocoa_assembler_push(assembler,message,&frame,&error)) cotocoa_abort(ctx,&error);
+                if(frame) {
+                    cotocoa_array_view global;
+                    if(cotocoa_message_view(frame,&global,&error)) cotocoa_abort(ctx,&error);
+                    require(global.shape[0]==6,ctx,"global frame shape");
+                    for(int k=0;k<shape[2];++k) for(int j=0;j<shape[1];++j) for(int i=0;i<6;++i)
+                        require(value((const char *)global.data+i*global.strides[0]+j*global.strides[1]+k*global.strides[2],dtype)
+                            ==-1000000+(i/3)*1000000+m.step*1000+(i%3)*100+j*10+k,ctx,"global frame values");
+                    ++frames; cotocoa_message_release(frame);
+                }
+            }
             if(cotocoa_complete(message,&error)) cotocoa_abort(ctx,&error);
             cotocoa_message_release(message);
             ++count;
         }
         require(count==16,ctx,"delivery count");
+        if(assemble) {
+            if(cotocoa_assembler_finish(assembler,&error)) cotocoa_abort(ctx,&error);
+            require(frames==8,ctx,"frame count"); cotocoa_assembler_release(assembler);
+        }
         printf("PASS typed C dtype=%d ndim=%d rank=%d\n",dtype,ndim,rank);
     }
     if(cotocoa_close(ctx,&error)) cotocoa_abort(NULL,&error);

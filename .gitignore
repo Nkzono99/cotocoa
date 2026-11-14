@@ -1081,5 +1081,6 @@ dkms.conf
 .pytest_cache/
 *.egg-info/
 .cotocoa-*/
+.cotocoa/
 # Raspberry Pi Pico disassembler file
 *.dis

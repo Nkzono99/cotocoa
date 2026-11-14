@@ -6,7 +6,11 @@ program typed
   implicit none
   type(ctca_context) :: ctx
   type(ctca_message) :: message
-  integer :: dtype, ndim, rank, ierr
+  type(ctca_ticket) :: ticket
+  type(ctca_assembler) :: assembler
+  type(ctca_message) :: frame
+  logical :: assemble
+  integer :: dtype, ndim, rank, ierr, loan
   character(len=1024) :: name, config, env
   call get_command_argument(1,name)
   call get_command_argument(2,config)
@@ -14,6 +18,11 @@ program typed
   read(env,*) dtype
   call get_environment_variable('COTOCOA_TEST_NDIM',env)
   read(env,*) ndim
+  call get_environment_variable('COTOCOA_TEST_LOAN',env,status=ierr)
+  loan=0
+  if (ierr==0) read(env,*) loan
+  call get_environment_variable('COTOCOA_TEST_ASSEMBLE',env,status=ierr)
+  assemble=ierr==0
   call ctx%open(trim(name),config=trim(config))
   call MPI_Comm_rank(ctx%comm(),rank,ierr)
   select case(dtype*10+ndim)
@@ -48,11 +57,11 @@ contains
   end subroutine
 
   subroutine array_1_1()
-    real(c_double) :: field(6)
+    real(c_double), target, asynchronous :: field(6)
     real(c_double), allocatable :: received(:)
     integer(c_int64_t) :: offset(1)
-    integer :: step, source, i, j, k, count
-    logical :: available
+    integer :: step, source, i, j, k, count, frames
+    logical :: available, ready
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
@@ -61,11 +70,24 @@ contains
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
-        call ctx%send('field',field(1:6:2),step=int(step,c_int64_t),offset=offset)
+        if (loan==1) then
+          call ctx%borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else if (loan==2) then
+          call ctx%submit_borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else
+          call ctx%send('field',field(1:6:2),step=int(step,c_int64_t),offset=offset)
+        end if
         field=0
+        if (assemble) call MPI_Barrier(ctx%comm(),ierr)
       end do
     else
       count=0
+      frames=0
+      if (assemble) call assembler%open(2,1048576_c_int64_t)
       do
         call ctx%receive('field',message,has_message=available)
         if (.not. available) exit
@@ -77,20 +99,38 @@ contains
       do i=1,3
         call require(received(i) == -1000000+source*1000000+step*1000+(i-1)*100,'noncontiguous snapshot')
       end do
+        if (assemble) then
+          call assembler%push(message,frame,ready)
+          if (ready) then
+            call frame%copy_to(received)
+            call require(size(received,1)==6,'global frame shape')
+      do i=1,6
+        source=(i-1)/3
+            call require(received(i) == -1000000+source*1000000+step*1000+mod(i-1,3)*100,'global frame values')
+      end do
+            frames=frames+1
+            call frame%release()
+          end if
+        end if
         call message%complete()
         count=count+1
       end do
       call require(count==16,'all delivery count')
+      if (assemble) then
+        call assembler%finish()
+        call assembler%close()
+        call require(frames==8,'frame count')
+      end if
       print *, 'PASS typed Fortran dtype=1 ndim=1 rank=',rank
     end if
   end subroutine
 
   subroutine array_1_2()
-    real(c_double) :: field(6,5)
+    real(c_double), target, asynchronous :: field(6,5)
     real(c_double), allocatable :: received(:,:)
     integer(c_int64_t) :: offset(2)
-    integer :: step, source, i, j, k, count
-    logical :: available
+    integer :: step, source, i, j, k, count, frames
+    logical :: available, ready
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
@@ -101,11 +141,24 @@ contains
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
-        call ctx%send('field',field(1:6:2,:),step=int(step,c_int64_t),offset=offset)
+        if (loan==1) then
+          call ctx%borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else if (loan==2) then
+          call ctx%submit_borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else
+          call ctx%send('field',field(1:6:2,:),step=int(step,c_int64_t),offset=offset)
+        end if
         field=0
+        if (assemble) call MPI_Barrier(ctx%comm(),ierr)
       end do
     else
       count=0
+      frames=0
+      if (assemble) call assembler%open(2,1048576_c_int64_t)
       do
         call ctx%receive('field',message,has_message=available)
         if (.not. available) exit
@@ -119,20 +172,40 @@ contains
         call require(received(i,j) == -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10,'noncontiguous snapshot')
       end do
       end do
+        if (assemble) then
+          call assembler%push(message,frame,ready)
+          if (ready) then
+            call frame%copy_to(received)
+            call require(size(received,1)==6,'global frame shape')
+      do j=1,5
+      do i=1,6
+        source=(i-1)/3
+            call require(received(i,j) == -1000000+source*1000000+step*1000+mod(i-1,3)*100+(j-1)*10,'global frame values')
+      end do
+      end do
+            frames=frames+1
+            call frame%release()
+          end if
+        end if
         call message%complete()
         count=count+1
       end do
       call require(count==16,'all delivery count')
+      if (assemble) then
+        call assembler%finish()
+        call assembler%close()
+        call require(frames==8,'frame count')
+      end if
       print *, 'PASS typed Fortran dtype=1 ndim=2 rank=',rank
     end if
   end subroutine
 
   subroutine array_1_3()
-    real(c_double) :: field(6,5,7)
+    real(c_double), target, asynchronous :: field(6,5,7)
     real(c_double), allocatable :: received(:,:,:)
     integer(c_int64_t) :: offset(3)
-    integer :: step, source, i, j, k, count
-    logical :: available
+    integer :: step, source, i, j, k, count, frames
+    logical :: available, ready
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
@@ -145,11 +218,24 @@ contains
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
-        call ctx%send('field',field(1:6:2,:,:),step=int(step,c_int64_t),offset=offset)
+        if (loan==1) then
+          call ctx%borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else if (loan==2) then
+          call ctx%submit_borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else
+          call ctx%send('field',field(1:6:2,:,:),step=int(step,c_int64_t),offset=offset)
+        end if
         field=0
+        if (assemble) call MPI_Barrier(ctx%comm(),ierr)
       end do
     else
       count=0
+      frames=0
+      if (assemble) call assembler%open(2,1048576_c_int64_t)
       do
         call ctx%receive('field',message,has_message=available)
         if (.not. available) exit
@@ -165,20 +251,42 @@ contains
       end do
       end do
       end do
+        if (assemble) then
+          call assembler%push(message,frame,ready)
+          if (ready) then
+            call frame%copy_to(received)
+            call require(size(received,1)==6,'global frame shape')
+      do k=1,7
+      do j=1,5
+      do i=1,6
+        source=(i-1)/3
+            call require(received(i,j,k) == -1000000+source*1000000+step*1000+mod(i-1,3)*100+(j-1)*10+k-1,'global frame values')
+      end do
+      end do
+      end do
+            frames=frames+1
+            call frame%release()
+          end if
+        end if
         call message%complete()
         count=count+1
       end do
       call require(count==16,'all delivery count')
+      if (assemble) then
+        call assembler%finish()
+        call assembler%close()
+        call require(frames==8,'frame count')
+      end if
       print *, 'PASS typed Fortran dtype=1 ndim=3 rank=',rank
     end if
   end subroutine
 
   subroutine array_2_1()
-    real(c_float) :: field(6)
+    real(c_float), target, asynchronous :: field(6)
     real(c_float), allocatable :: received(:)
     integer(c_int64_t) :: offset(1)
-    integer :: step, source, i, j, k, count
-    logical :: available
+    integer :: step, source, i, j, k, count, frames
+    logical :: available, ready
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
@@ -187,11 +295,24 @@ contains
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
-        call ctx%send('field',field(1:6:2),step=int(step,c_int64_t),offset=offset)
+        if (loan==1) then
+          call ctx%borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else if (loan==2) then
+          call ctx%submit_borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else
+          call ctx%send('field',field(1:6:2),step=int(step,c_int64_t),offset=offset)
+        end if
         field=0
+        if (assemble) call MPI_Barrier(ctx%comm(),ierr)
       end do
     else
       count=0
+      frames=0
+      if (assemble) call assembler%open(2,1048576_c_int64_t)
       do
         call ctx%receive('field',message,has_message=available)
         if (.not. available) exit
@@ -203,20 +324,38 @@ contains
       do i=1,3
         call require(received(i) == -1000000+source*1000000+step*1000+(i-1)*100,'noncontiguous snapshot')
       end do
+        if (assemble) then
+          call assembler%push(message,frame,ready)
+          if (ready) then
+            call frame%copy_to(received)
+            call require(size(received,1)==6,'global frame shape')
+      do i=1,6
+        source=(i-1)/3
+            call require(received(i) == -1000000+source*1000000+step*1000+mod(i-1,3)*100,'global frame values')
+      end do
+            frames=frames+1
+            call frame%release()
+          end if
+        end if
         call message%complete()
         count=count+1
       end do
       call require(count==16,'all delivery count')
+      if (assemble) then
+        call assembler%finish()
+        call assembler%close()
+        call require(frames==8,'frame count')
+      end if
       print *, 'PASS typed Fortran dtype=2 ndim=1 rank=',rank
     end if
   end subroutine
 
   subroutine array_2_2()
-    real(c_float) :: field(6,5)
+    real(c_float), target, asynchronous :: field(6,5)
     real(c_float), allocatable :: received(:,:)
     integer(c_int64_t) :: offset(2)
-    integer :: step, source, i, j, k, count
-    logical :: available
+    integer :: step, source, i, j, k, count, frames
+    logical :: available, ready
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
@@ -227,11 +366,24 @@ contains
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
-        call ctx%send('field',field(1:6:2,:),step=int(step,c_int64_t),offset=offset)
+        if (loan==1) then
+          call ctx%borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else if (loan==2) then
+          call ctx%submit_borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else
+          call ctx%send('field',field(1:6:2,:),step=int(step,c_int64_t),offset=offset)
+        end if
         field=0
+        if (assemble) call MPI_Barrier(ctx%comm(),ierr)
       end do
     else
       count=0
+      frames=0
+      if (assemble) call assembler%open(2,1048576_c_int64_t)
       do
         call ctx%receive('field',message,has_message=available)
         if (.not. available) exit
@@ -245,20 +397,40 @@ contains
         call require(received(i,j) == -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10,'noncontiguous snapshot')
       end do
       end do
+        if (assemble) then
+          call assembler%push(message,frame,ready)
+          if (ready) then
+            call frame%copy_to(received)
+            call require(size(received,1)==6,'global frame shape')
+      do j=1,5
+      do i=1,6
+        source=(i-1)/3
+            call require(received(i,j) == -1000000+source*1000000+step*1000+mod(i-1,3)*100+(j-1)*10,'global frame values')
+      end do
+      end do
+            frames=frames+1
+            call frame%release()
+          end if
+        end if
         call message%complete()
         count=count+1
       end do
       call require(count==16,'all delivery count')
+      if (assemble) then
+        call assembler%finish()
+        call assembler%close()
+        call require(frames==8,'frame count')
+      end if
       print *, 'PASS typed Fortran dtype=2 ndim=2 rank=',rank
     end if
   end subroutine
 
   subroutine array_2_3()
-    real(c_float) :: field(6,5,7)
+    real(c_float), target, asynchronous :: field(6,5,7)
     real(c_float), allocatable :: received(:,:,:)
     integer(c_int64_t) :: offset(3)
-    integer :: step, source, i, j, k, count
-    logical :: available
+    integer :: step, source, i, j, k, count, frames
+    logical :: available, ready
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
@@ -271,11 +443,24 @@ contains
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
-        call ctx%send('field',field(1:6:2,:,:),step=int(step,c_int64_t),offset=offset)
+        if (loan==1) then
+          call ctx%borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else if (loan==2) then
+          call ctx%submit_borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else
+          call ctx%send('field',field(1:6:2,:,:),step=int(step,c_int64_t),offset=offset)
+        end if
         field=0
+        if (assemble) call MPI_Barrier(ctx%comm(),ierr)
       end do
     else
       count=0
+      frames=0
+      if (assemble) call assembler%open(2,1048576_c_int64_t)
       do
         call ctx%receive('field',message,has_message=available)
         if (.not. available) exit
@@ -291,20 +476,42 @@ contains
       end do
       end do
       end do
+        if (assemble) then
+          call assembler%push(message,frame,ready)
+          if (ready) then
+            call frame%copy_to(received)
+            call require(size(received,1)==6,'global frame shape')
+      do k=1,7
+      do j=1,5
+      do i=1,6
+        source=(i-1)/3
+            call require(received(i,j,k) == -1000000+source*1000000+step*1000+mod(i-1,3)*100+(j-1)*10+k-1,'global frame values')
+      end do
+      end do
+      end do
+            frames=frames+1
+            call frame%release()
+          end if
+        end if
         call message%complete()
         count=count+1
       end do
       call require(count==16,'all delivery count')
+      if (assemble) then
+        call assembler%finish()
+        call assembler%close()
+        call require(frames==8,'frame count')
+      end if
       print *, 'PASS typed Fortran dtype=2 ndim=3 rank=',rank
     end if
   end subroutine
 
   subroutine array_3_1()
-    integer(c_int32_t) :: field(6)
+    integer(c_int32_t), target, asynchronous :: field(6)
     integer(c_int32_t), allocatable :: received(:)
     integer(c_int64_t) :: offset(1)
-    integer :: step, source, i, j, k, count
-    logical :: available
+    integer :: step, source, i, j, k, count, frames
+    logical :: available, ready
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
@@ -313,11 +520,24 @@ contains
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
-        call ctx%send('field',field(1:6:2),step=int(step,c_int64_t),offset=offset)
+        if (loan==1) then
+          call ctx%borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else if (loan==2) then
+          call ctx%submit_borrow('field',field(1:6:2),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else
+          call ctx%send('field',field(1:6:2),step=int(step,c_int64_t),offset=offset)
+        end if
         field=0
+        if (assemble) call MPI_Barrier(ctx%comm(),ierr)
       end do
     else
       count=0
+      frames=0
+      if (assemble) call assembler%open(2,1048576_c_int64_t)
       do
         call ctx%receive('field',message,has_message=available)
         if (.not. available) exit
@@ -329,20 +549,38 @@ contains
       do i=1,3
         call require(received(i) == -1000000+source*1000000+step*1000+(i-1)*100,'noncontiguous snapshot')
       end do
+        if (assemble) then
+          call assembler%push(message,frame,ready)
+          if (ready) then
+            call frame%copy_to(received)
+            call require(size(received,1)==6,'global frame shape')
+      do i=1,6
+        source=(i-1)/3
+            call require(received(i) == -1000000+source*1000000+step*1000+mod(i-1,3)*100,'global frame values')
+      end do
+            frames=frames+1
+            call frame%release()
+          end if
+        end if
         call message%complete()
         count=count+1
       end do
       call require(count==16,'all delivery count')
+      if (assemble) then
+        call assembler%finish()
+        call assembler%close()
+        call require(frames==8,'frame count')
+      end if
       print *, 'PASS typed Fortran dtype=3 ndim=1 rank=',rank
     end if
   end subroutine
 
   subroutine array_3_2()
-    integer(c_int32_t) :: field(6,5)
+    integer(c_int32_t), target, asynchronous :: field(6,5)
     integer(c_int32_t), allocatable :: received(:,:)
     integer(c_int64_t) :: offset(2)
-    integer :: step, source, i, j, k, count
-    logical :: available
+    integer :: step, source, i, j, k, count, frames
+    logical :: available, ready
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
@@ -353,11 +591,24 @@ contains
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
-        call ctx%send('field',field(1:6:2,:),step=int(step,c_int64_t),offset=offset)
+        if (loan==1) then
+          call ctx%borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else if (loan==2) then
+          call ctx%submit_borrow('field',field(1:6:2,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else
+          call ctx%send('field',field(1:6:2,:),step=int(step,c_int64_t),offset=offset)
+        end if
         field=0
+        if (assemble) call MPI_Barrier(ctx%comm(),ierr)
       end do
     else
       count=0
+      frames=0
+      if (assemble) call assembler%open(2,1048576_c_int64_t)
       do
         call ctx%receive('field',message,has_message=available)
         if (.not. available) exit
@@ -371,20 +622,40 @@ contains
         call require(received(i,j) == -1000000+source*1000000+step*1000+(i-1)*100+(j-1)*10,'noncontiguous snapshot')
       end do
       end do
+        if (assemble) then
+          call assembler%push(message,frame,ready)
+          if (ready) then
+            call frame%copy_to(received)
+            call require(size(received,1)==6,'global frame shape')
+      do j=1,5
+      do i=1,6
+        source=(i-1)/3
+            call require(received(i,j) == -1000000+source*1000000+step*1000+mod(i-1,3)*100+(j-1)*10,'global frame values')
+      end do
+      end do
+            frames=frames+1
+            call frame%release()
+          end if
+        end if
         call message%complete()
         count=count+1
       end do
       call require(count==16,'all delivery count')
+      if (assemble) then
+        call assembler%finish()
+        call assembler%close()
+        call require(frames==8,'frame count')
+      end if
       print *, 'PASS typed Fortran dtype=3 ndim=2 rank=',rank
     end if
   end subroutine
 
   subroutine array_3_3()
-    integer(c_int32_t) :: field(6,5,7)
+    integer(c_int32_t), target, asynchronous :: field(6,5,7)
     integer(c_int32_t), allocatable :: received(:,:,:)
     integer(c_int64_t) :: offset(3)
-    integer :: step, source, i, j, k, count
-    logical :: available
+    integer :: step, source, i, j, k, count, frames
+    logical :: available, ready
     if (trim(name)=='producer') then
       source=rank
       do step=1,8
@@ -397,11 +668,24 @@ contains
       end do
         offset=0_c_int64_t
         offset(1)=int(rank*3,c_int64_t)
-        call ctx%send('field',field(1:6:2,:,:),step=int(step,c_int64_t),offset=offset)
+        if (loan==1) then
+          call ctx%borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else if (loan==2) then
+          call ctx%submit_borrow('field',field(1:6:2,:,:),ticket,step=int(step,c_int64_t),offset=offset)
+          call ticket%wait()
+          call ticket%release()
+        else
+          call ctx%send('field',field(1:6:2,:,:),step=int(step,c_int64_t),offset=offset)
+        end if
         field=0
+        if (assemble) call MPI_Barrier(ctx%comm(),ierr)
       end do
     else
       count=0
+      frames=0
+      if (assemble) call assembler%open(2,1048576_c_int64_t)
       do
         call ctx%receive('field',message,has_message=available)
         if (.not. available) exit
@@ -417,10 +701,32 @@ contains
       end do
       end do
       end do
+        if (assemble) then
+          call assembler%push(message,frame,ready)
+          if (ready) then
+            call frame%copy_to(received)
+            call require(size(received,1)==6,'global frame shape')
+      do k=1,7
+      do j=1,5
+      do i=1,6
+        source=(i-1)/3
+            call require(received(i,j,k) == -1000000+source*1000000+step*1000+mod(i-1,3)*100+(j-1)*10+k-1,'global frame values')
+      end do
+      end do
+      end do
+            frames=frames+1
+            call frame%release()
+          end if
+        end if
         call message%complete()
         count=count+1
       end do
       call require(count==16,'all delivery count')
+      if (assemble) then
+        call assembler%finish()
+        call assembler%close()
+        call require(frames==8,'frame count')
+      end if
       print *, 'PASS typed Fortran dtype=3 ndim=3 rank=',rank
     end if
   end subroutine

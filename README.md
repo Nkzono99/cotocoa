@@ -25,7 +25,7 @@ Developers of CoToCoA:
 
 ## Fork development
 
-This fork's proposed Fortran, C, and Python interfaces and configuration-driven
+This fork's Fortran, C, and Python interfaces and configuration-driven
 coupling are described in [the high-level API design](docs/HIGH-LEVEL-API.md)
 (Japanese). All three languages can act as producers or consumers, including
 same-language connections.
@@ -34,8 +34,11 @@ and `cotocoa check/plan/run`. See [the build and usage guide](docs/HIGH-LEVEL-US
 and [runnable examples](examples/snapshot). Multiple ports, fan-out, multiple
 producer programs, and typed task submission with worker groups are covered in
 [Tasks and ports](docs/TASKS-AND-PORTS.md).
-Streams support `all` and `latest` delivery; see
-[delivery and data lifetime](docs/DELIVERY-AND-SHARING.md).
+Streams support `all` and `latest` delivery, and both streams and tasks support
+borrowed inputs; see [delivery and data lifetime](docs/DELIVERY-AND-SHARING.md).
+Use the bounded [Assembler](docs/ASSEMBLY.md) for complete global frames, and
+[probe/status and runtime diagnostics](docs/DIAGNOSTICS.md) to inspect jobs.
+[Runnable task examples](examples/tasks) cover all three languages.
 
 ## Install
 
@@ -51,9 +54,13 @@ ctca = { git = "https://github.com/Nkzono99/cotocoa.git" }
 
 Build the native library with CMake and matching MPI C/Fortran compilers, then
 install the Python package from this repository with `pip install -e .`.
+For a C-only build, set `-DCOTOCOA_ENABLE_FORTRAN=OFF`. Native CMake install
+exports `cotocoa::cotocoa` and the optional `cotocoa::cotocoa_fortran` target.
 The native build and Python installation are separate steps; see the guide above.
 
 ### Legacy ctca4py
 
 The original Worker interface remains under `ctca4py/`; its Python package
 metadata is in that subdirectory. It is separate from the new `cotocoa` package.
+Install it with `pip install ./ctca4py`; set `CTCA4PY_LIBRARY` to the matching
+native library when it is outside the standard library search path.
