@@ -1,0 +1,6 @@
+add_executable(coupling_c coupling.c)
+target_link_libraries(coupling_c PRIVATE cotocoa)
+add_executable(coupling_fortran coupling.f90)
+target_link_libraries(coupling_fortran PRIVATE cotocoa_fortran)
+add_executable(legacy_c legacy.c)
+target_link_libraries(legacy_c PRIVATE cotocoa)
