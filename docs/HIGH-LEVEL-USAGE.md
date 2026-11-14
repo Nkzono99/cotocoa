@@ -2,7 +2,8 @@
 
 高水準 API の最初の実装は、3 言語すべての送信・受信に対応する。
 `int32/float32/float64` の固定 1〜3 次元配列を、一方向の `snapshot/all/shards` として転送する。
-型や領域分割の異なる配列の自動変換、双方向連成、Task API は後続の実装となる。
+複数接続と Task API は [TASKS-AND-PORTS.md](TASKS-AND-PORTS.md) を参照する。
+型や領域分割の異なる配列の自動変換、双方向・循環連成は対象に含めない。
 非連続配列は送信時に packing する。C/Python は正負の byte stride に対応し、
 Fortran の generic send/copy_to は3型×3次元の overload を提供する。
 
@@ -161,3 +162,10 @@ Slurm profile は `srun --kill-on-bad-exit=1 /bin/sh <dispatch>` で各ケース
 `-t 0:15:00`、`--rsc p=5:t=1:c=1` で既存14ケースと追加27ケースを通過した。
 追加ケースは各言語が int32/float32/float64 と1〜3次元の全9組合せを送信し、
 受信言語を交替させ、間引き・逆順スライスと負値の一致を検証する。
+
+複数接続・Task のビルドは `9175689`、設定テスト31件を通過した。
+既存14 MPIケースは `9175679` で通過。
+`sbatch -p gr20001a tests/kudpc-multiplex.sbatch` の `9175716` は
+`-t 0:15:00`、`--rsc p=5:t=1:c=1` で追加20ケースをすべて通過した。
+Stream と Task のそれぞれで全9言語間×9型・次元の162組合せを交換し、
+fan-out と複数 producer、Task の2 worker group、ticket の寿命も検証する。

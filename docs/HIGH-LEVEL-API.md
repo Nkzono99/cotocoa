@@ -4,6 +4,8 @@
 固定1〜3次元の int32/float32/float64 を snapshot/all/shards で提供する。
 実際の利用方法と制限は [HIGH-LEVEL-USAGE.md](HIGH-LEVEL-USAGE.md) を参照。
 以下には追加型、複数接続、Task API など後続実装の設計も含む。
+型拡張・複数接続・Task の現行契約は利用ガイドと
+[TASKS-AND-PORTS.md](TASKS-AND-PORTS.md) に反映している。
 対象: `Nkzono99/cotocoa` の独自拡張。
 設計の基点: `8f705f8c6aa8e7c51b98f50c211dd360d247191a`。
 

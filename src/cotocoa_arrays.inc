@@ -476,3 +476,327 @@
     end if
     call report(rc, error, c_null_ptr, status)
   end subroutine
+
+  subroutine submit_real64_1(self, name, array, ticket, step, time, offset, status)
+    class(ctca_context), intent(inout) :: self
+    character(len=*), intent(in) :: name
+    real(c_double), contiguous, target, intent(in) :: array(:)
+    type(ctca_ticket), intent(inout) :: ticket
+    integer(c_int64_t), optional, intent(in) :: step
+    real(c_double), optional, intent(in) :: time
+    integer(c_int64_t), optional, intent(in) :: offset(1)
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    type(c_options) :: options
+    type(c_view) :: view
+    type(c_ptr) :: data
+    integer(c_int64_t) :: sizes(3)
+    integer(c_int) :: rc
+    data = c_null_ptr
+    if (size(array) > 0) data = c_loc(array(1))
+    sizes = 1_c_int64_t
+    sizes(:1) = shape(array, kind=c_int64_t)
+    view = c_make_view(data, 1_c_int, sizes, 1_c_int)
+    options%step = 0_c_int64_t
+    if (present(step)) options%step = step
+    options%has_time = 0
+    options%time = 0.0_c_double
+    options%offset = 0_c_int64_t
+    if (present(time)) then
+      options%has_time = 1
+      options%time = time
+    end if
+    if (present(offset)) options%offset(:1) = offset
+    call ticket%release()
+    rc = c_submit(self%handle, trim(name)//c_null_char, &
+                  view, options, ticket%handle, error)
+    call report(rc, error, self%handle, status)
+  end subroutine
+
+  subroutine submit_real64_2(self, name, array, ticket, step, time, offset, status)
+    class(ctca_context), intent(inout) :: self
+    character(len=*), intent(in) :: name
+    real(c_double), contiguous, target, intent(in) :: array(:, :)
+    type(ctca_ticket), intent(inout) :: ticket
+    integer(c_int64_t), optional, intent(in) :: step
+    real(c_double), optional, intent(in) :: time
+    integer(c_int64_t), optional, intent(in) :: offset(2)
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    type(c_options) :: options
+    type(c_view) :: view
+    type(c_ptr) :: data
+    integer(c_int64_t) :: sizes(3)
+    integer(c_int) :: rc
+    data = c_null_ptr
+    if (size(array) > 0) data = c_loc(array(1, 1))
+    sizes = 1_c_int64_t
+    sizes(:2) = shape(array, kind=c_int64_t)
+    view = c_make_view(data, 2_c_int, sizes, 1_c_int)
+    options%step = 0_c_int64_t
+    if (present(step)) options%step = step
+    options%has_time = 0
+    options%time = 0.0_c_double
+    options%offset = 0_c_int64_t
+    if (present(time)) then
+      options%has_time = 1
+      options%time = time
+    end if
+    if (present(offset)) options%offset(:2) = offset
+    call ticket%release()
+    rc = c_submit(self%handle, trim(name)//c_null_char, &
+                  view, options, ticket%handle, error)
+    call report(rc, error, self%handle, status)
+  end subroutine
+
+  subroutine submit_real64_3(self, name, array, ticket, step, time, offset, status)
+    class(ctca_context), intent(inout) :: self
+    character(len=*), intent(in) :: name
+    real(c_double), contiguous, target, intent(in) :: array(:, :, :)
+    type(ctca_ticket), intent(inout) :: ticket
+    integer(c_int64_t), optional, intent(in) :: step
+    real(c_double), optional, intent(in) :: time
+    integer(c_int64_t), optional, intent(in) :: offset(3)
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    type(c_options) :: options
+    type(c_view) :: view
+    type(c_ptr) :: data
+    integer(c_int64_t) :: sizes(3)
+    integer(c_int) :: rc
+    data = c_null_ptr
+    if (size(array) > 0) data = c_loc(array(1, 1, 1))
+    sizes = 1_c_int64_t
+    sizes(:3) = shape(array, kind=c_int64_t)
+    view = c_make_view(data, 3_c_int, sizes, 1_c_int)
+    options%step = 0_c_int64_t
+    if (present(step)) options%step = step
+    options%has_time = 0
+    options%time = 0.0_c_double
+    options%offset = 0_c_int64_t
+    if (present(time)) then
+      options%has_time = 1
+      options%time = time
+    end if
+    if (present(offset)) options%offset(:3) = offset
+    call ticket%release()
+    rc = c_submit(self%handle, trim(name)//c_null_char, &
+                  view, options, ticket%handle, error)
+    call report(rc, error, self%handle, status)
+  end subroutine
+
+  subroutine submit_real32_1(self, name, array, ticket, step, time, offset, status)
+    class(ctca_context), intent(inout) :: self
+    character(len=*), intent(in) :: name
+    real(c_float), contiguous, target, intent(in) :: array(:)
+    type(ctca_ticket), intent(inout) :: ticket
+    integer(c_int64_t), optional, intent(in) :: step
+    real(c_double), optional, intent(in) :: time
+    integer(c_int64_t), optional, intent(in) :: offset(1)
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    type(c_options) :: options
+    type(c_view) :: view
+    type(c_ptr) :: data
+    integer(c_int64_t) :: sizes(3)
+    integer(c_int) :: rc
+    data = c_null_ptr
+    if (size(array) > 0) data = c_loc(array(1))
+    sizes = 1_c_int64_t
+    sizes(:1) = shape(array, kind=c_int64_t)
+    view = c_make_view_f32(data, 1_c_int, sizes, 1_c_int)
+    options%step = 0_c_int64_t
+    if (present(step)) options%step = step
+    options%has_time = 0
+    options%time = 0.0_c_double
+    options%offset = 0_c_int64_t
+    if (present(time)) then
+      options%has_time = 1
+      options%time = time
+    end if
+    if (present(offset)) options%offset(:1) = offset
+    call ticket%release()
+    rc = c_submit(self%handle, trim(name)//c_null_char, &
+                  view, options, ticket%handle, error)
+    call report(rc, error, self%handle, status)
+  end subroutine
+
+  subroutine submit_real32_2(self, name, array, ticket, step, time, offset, status)
+    class(ctca_context), intent(inout) :: self
+    character(len=*), intent(in) :: name
+    real(c_float), contiguous, target, intent(in) :: array(:, :)
+    type(ctca_ticket), intent(inout) :: ticket
+    integer(c_int64_t), optional, intent(in) :: step
+    real(c_double), optional, intent(in) :: time
+    integer(c_int64_t), optional, intent(in) :: offset(2)
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    type(c_options) :: options
+    type(c_view) :: view
+    type(c_ptr) :: data
+    integer(c_int64_t) :: sizes(3)
+    integer(c_int) :: rc
+    data = c_null_ptr
+    if (size(array) > 0) data = c_loc(array(1, 1))
+    sizes = 1_c_int64_t
+    sizes(:2) = shape(array, kind=c_int64_t)
+    view = c_make_view_f32(data, 2_c_int, sizes, 1_c_int)
+    options%step = 0_c_int64_t
+    if (present(step)) options%step = step
+    options%has_time = 0
+    options%time = 0.0_c_double
+    options%offset = 0_c_int64_t
+    if (present(time)) then
+      options%has_time = 1
+      options%time = time
+    end if
+    if (present(offset)) options%offset(:2) = offset
+    call ticket%release()
+    rc = c_submit(self%handle, trim(name)//c_null_char, &
+                  view, options, ticket%handle, error)
+    call report(rc, error, self%handle, status)
+  end subroutine
+
+  subroutine submit_real32_3(self, name, array, ticket, step, time, offset, status)
+    class(ctca_context), intent(inout) :: self
+    character(len=*), intent(in) :: name
+    real(c_float), contiguous, target, intent(in) :: array(:, :, :)
+    type(ctca_ticket), intent(inout) :: ticket
+    integer(c_int64_t), optional, intent(in) :: step
+    real(c_double), optional, intent(in) :: time
+    integer(c_int64_t), optional, intent(in) :: offset(3)
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    type(c_options) :: options
+    type(c_view) :: view
+    type(c_ptr) :: data
+    integer(c_int64_t) :: sizes(3)
+    integer(c_int) :: rc
+    data = c_null_ptr
+    if (size(array) > 0) data = c_loc(array(1, 1, 1))
+    sizes = 1_c_int64_t
+    sizes(:3) = shape(array, kind=c_int64_t)
+    view = c_make_view_f32(data, 3_c_int, sizes, 1_c_int)
+    options%step = 0_c_int64_t
+    if (present(step)) options%step = step
+    options%has_time = 0
+    options%time = 0.0_c_double
+    options%offset = 0_c_int64_t
+    if (present(time)) then
+      options%has_time = 1
+      options%time = time
+    end if
+    if (present(offset)) options%offset(:3) = offset
+    call ticket%release()
+    rc = c_submit(self%handle, trim(name)//c_null_char, &
+                  view, options, ticket%handle, error)
+    call report(rc, error, self%handle, status)
+  end subroutine
+
+  subroutine submit_int32_1(self, name, array, ticket, step, time, offset, status)
+    class(ctca_context), intent(inout) :: self
+    character(len=*), intent(in) :: name
+    integer(c_int32_t), contiguous, target, intent(in) :: array(:)
+    type(ctca_ticket), intent(inout) :: ticket
+    integer(c_int64_t), optional, intent(in) :: step
+    real(c_double), optional, intent(in) :: time
+    integer(c_int64_t), optional, intent(in) :: offset(1)
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    type(c_options) :: options
+    type(c_view) :: view
+    type(c_ptr) :: data
+    integer(c_int64_t) :: sizes(3)
+    integer(c_int) :: rc
+    data = c_null_ptr
+    if (size(array) > 0) data = c_loc(array(1))
+    sizes = 1_c_int64_t
+    sizes(:1) = shape(array, kind=c_int64_t)
+    view = c_make_view_i32(data, 1_c_int, sizes, 1_c_int)
+    options%step = 0_c_int64_t
+    if (present(step)) options%step = step
+    options%has_time = 0
+    options%time = 0.0_c_double
+    options%offset = 0_c_int64_t
+    if (present(time)) then
+      options%has_time = 1
+      options%time = time
+    end if
+    if (present(offset)) options%offset(:1) = offset
+    call ticket%release()
+    rc = c_submit(self%handle, trim(name)//c_null_char, &
+                  view, options, ticket%handle, error)
+    call report(rc, error, self%handle, status)
+  end subroutine
+
+  subroutine submit_int32_2(self, name, array, ticket, step, time, offset, status)
+    class(ctca_context), intent(inout) :: self
+    character(len=*), intent(in) :: name
+    integer(c_int32_t), contiguous, target, intent(in) :: array(:, :)
+    type(ctca_ticket), intent(inout) :: ticket
+    integer(c_int64_t), optional, intent(in) :: step
+    real(c_double), optional, intent(in) :: time
+    integer(c_int64_t), optional, intent(in) :: offset(2)
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    type(c_options) :: options
+    type(c_view) :: view
+    type(c_ptr) :: data
+    integer(c_int64_t) :: sizes(3)
+    integer(c_int) :: rc
+    data = c_null_ptr
+    if (size(array) > 0) data = c_loc(array(1, 1))
+    sizes = 1_c_int64_t
+    sizes(:2) = shape(array, kind=c_int64_t)
+    view = c_make_view_i32(data, 2_c_int, sizes, 1_c_int)
+    options%step = 0_c_int64_t
+    if (present(step)) options%step = step
+    options%has_time = 0
+    options%time = 0.0_c_double
+    options%offset = 0_c_int64_t
+    if (present(time)) then
+      options%has_time = 1
+      options%time = time
+    end if
+    if (present(offset)) options%offset(:2) = offset
+    call ticket%release()
+    rc = c_submit(self%handle, trim(name)//c_null_char, &
+                  view, options, ticket%handle, error)
+    call report(rc, error, self%handle, status)
+  end subroutine
+
+  subroutine submit_int32_3(self, name, array, ticket, step, time, offset, status)
+    class(ctca_context), intent(inout) :: self
+    character(len=*), intent(in) :: name
+    integer(c_int32_t), contiguous, target, intent(in) :: array(:, :, :)
+    type(ctca_ticket), intent(inout) :: ticket
+    integer(c_int64_t), optional, intent(in) :: step
+    real(c_double), optional, intent(in) :: time
+    integer(c_int64_t), optional, intent(in) :: offset(3)
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    type(c_options) :: options
+    type(c_view) :: view
+    type(c_ptr) :: data
+    integer(c_int64_t) :: sizes(3)
+    integer(c_int) :: rc
+    data = c_null_ptr
+    if (size(array) > 0) data = c_loc(array(1, 1, 1))
+    sizes = 1_c_int64_t
+    sizes(:3) = shape(array, kind=c_int64_t)
+    view = c_make_view_i32(data, 3_c_int, sizes, 1_c_int)
+    options%step = 0_c_int64_t
+    if (present(step)) options%step = step
+    options%has_time = 0
+    options%time = 0.0_c_double
+    options%offset = 0_c_int64_t
+    if (present(time)) then
+      options%has_time = 1
+      options%time = time
+    end if
+    if (present(offset)) options%offset(:3) = offset
+    call ticket%release()
+    rc = c_submit(self%handle, trim(name)//c_null_char, &
+                  view, options, ticket%handle, error)
+    call report(rc, error, self%handle, status)
+  end subroutine

@@ -55,7 +55,7 @@ class Context:
         error = Error(-2, text.encode("utf-8", errors="replace")[:511])
         self._lib.cotocoa_abort(self._handle, C.byref(error))
 
-    def send(self, name, array, *, step, time=None, offset=None):
+    def _prepare(self,array,step,time,offset):
         self._require_open()
         import numpy as np
         types = {np.dtype("float64"): 1, np.dtype("float32"): 2, np.dtype("int32"): 3}
@@ -72,15 +72,33 @@ class Context:
         view = View(array.ctypes.data, types[array.dtype], array.ndim,
                     (C.c_int64 * 3)(*(array.shape + (1,)*(3-array.ndim))),
                     (C.c_int64 * 3)(*(array.strides + (0,)*(3-array.ndim))))
+        return view,options
+
+    def send(self,name,array,*,step,time=None,offset=None):
+        view,options=self._prepare(array,step,time,offset)
         error = Error()
         _check(self._lib.cotocoa_send(self._handle, name.encode(), C.byref(view),
                                     C.byref(options), C.byref(error)), error)
 
-    def receive(self, name):
+    def submit(self,name,array,*,step=0,time=None,offset=None):
+        view,options=self._prepare(array,step,time,offset)
+        error,handle=Error(),C.c_void_p()
+        _check(self._lib.cotocoa_submit(self._handle,name.encode(),C.byref(view),C.byref(options),
+                                       C.byref(handle),C.byref(error)),error)
+        return Ticket(self._lib,handle)
+
+    def receive(self,name=None):
+        return self._receive(name,False)
+
+    def tasks(self,operation=None):
+        return self._receive(operation,True)
+
+    def _receive(self, name, tasks):
         self._require_open()
         while True:
             handle, error = C.c_void_p(), Error()
-            rc = _check(self._lib.cotocoa_receive(self._handle, name.encode(),
+            receive=self._lib.cotocoa_next_task if tasks else self._lib.cotocoa_receive
+            rc = _check(receive(self._handle, name.encode() if name is not None else None,
                                                  C.byref(handle), C.byref(error)), error)
             if rc == 1:
                 return
@@ -117,6 +135,9 @@ class Message:
         self.global_shape, self.offset = tuple(meta.global_shape)[:meta.ndim], tuple(meta.offset)[:meta.ndim]
         self.axes = tuple(bytes(axis).split(b"\0", 1)[0].decode() for axis in meta.axes[:meta.ndim])
         self.units, self.time_unit = meta.units.decode(), meta.time_unit.decode()
+        self.kind='task' if meta.kind else 'stream'
+        self.name,self.port,self.source=meta.name.decode(),meta.port.decode(),meta.source.decode()
+        self.source_count=meta.source_count
         dtype, ctype = {1: (np.dtype("float64"), C.c_double),
                         2: (np.dtype("float32"), C.c_float),
                         3: (np.dtype("int32"), C.c_int32)}[meta.dtype]
@@ -145,3 +166,31 @@ class Message:
         self._context._lib.cotocoa_message_release(self._handle)
         self._handle = C.c_void_p()
         self._context._active = None
+
+
+class Ticket:
+    """Completion handle; releasing it never cancels the requested work."""
+    def __init__(self,lib,handle):
+        self._lib,self._handle=lib,handle
+
+    def test(self):
+        if not self._handle:
+            raise RuntimeError('ticket was released')
+        done,error=C.c_int(),Error()
+        _check(self._lib.cotocoa_ticket_test(self._handle,C.byref(done),C.byref(error)),error)
+        return bool(done.value)
+
+    def wait(self):
+        if not self._handle:
+            raise RuntimeError('ticket was released')
+        error=Error()
+        _check(self._lib.cotocoa_ticket_wait(self._handle,C.byref(error)),error)
+
+    def release(self):
+        if self._handle:
+            self._lib.cotocoa_ticket_release(self._handle)
+            self._handle=C.c_void_p()
+
+    def __del__(self):
+        # Native ticket release only frees local memory, with no MPI operation.
+        self.release()

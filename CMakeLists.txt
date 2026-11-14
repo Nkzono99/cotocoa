@@ -1,15 +1,15 @@
 cmake_minimum_required(VERSION 3.16)
-project(cotocoa VERSION 0.1.0 LANGUAGES C Fortran)
+project(cotocoa VERSION 0.2.0 LANGUAGES C Fortran)
 include(GNUInstallDirs)
 find_package(MPI REQUIRED COMPONENTS C Fortran)
 
-add_library(cotocoa SHARED src/ctca.c src/ctca_f.c src/cotocoa.c)
+add_library(cotocoa SHARED src/ctca.c src/ctca_f.c src/cotocoa.c src/cotocoa_plan.c)
 target_compile_features(cotocoa PRIVATE c_std_11)
 target_include_directories(cotocoa PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(cotocoa PUBLIC MPI::MPI_C)
-set_target_properties(cotocoa PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0)
+set_target_properties(cotocoa PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 1)
 
 add_library(cotocoa_fortran src/cotocoa_mod.f90 src/ctca_mod.f90 src/ctca_int8_mod.f90)
 set_target_properties(cotocoa_fortran PROPERTIES

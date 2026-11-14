@@ -66,6 +66,25 @@ def generate():
     call report(rc, error, c_null_ptr, status)
   end subroutine
 ''')
+    # Submit uses the same typed descriptors and packing rules as send. The
+    # caller supplies a ticket variable, so replacing it can release its old
+    # local reference without losing or cancelling the underlying request.
+    for suffix in ('real64','real32','int32'):
+        for rank in (1,2,3):
+            text=''.join(parts)
+            start=text.index(f'  subroutine send_{suffix}_{rank}(')
+            end=text.index('  end subroutine',start)+len('  end subroutine')
+            submit=text[start:end]
+            submit=submit.replace(f'send_{suffix}_{rank}(',f'submit_{suffix}_{rank}(')
+            submit=submit.replace('(self, name, array, step,','(self, name, array, ticket, step,')
+            submit=submit.replace('    integer(c_int64_t), intent(in) :: step',
+                '    type(ctca_ticket), intent(inout) :: ticket\n    integer(c_int64_t), optional, intent(in) :: step')
+            submit=submit.replace('    options%step = step',
+                '    options%step = 0_c_int64_t\n    if (present(step)) options%step = step')
+            submit=submit.replace('    rc = c_send(self%handle, trim(name)//c_null_char, view, options, error)',
+                '    call ticket%release()\n    rc = c_submit(self%handle, trim(name)//c_null_char, &\n' +
+                '                  view, options, ticket%handle, error)')
+            parts.append('\n'+submit+'\n')
     return ''.join(parts)
 
 

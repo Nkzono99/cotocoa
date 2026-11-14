@@ -26,7 +26,9 @@ class Metadata(C.Structure):
                 ("shape", C.c_int64 * 3), ("global_shape", C.c_int64 * 3),
                 ("offset", C.c_int64 * 3), ("axes", (C.c_char * 64) * 3),
                 ("units", C.c_char * 64), ("time_unit", C.c_char * 64),
-                ("dtype", C.c_int), ("ndim", C.c_int)]
+                ("dtype", C.c_int), ("ndim", C.c_int),
+                ("kind", C.c_int), ("connection_id", C.c_int), ("source_count", C.c_int),
+                ("name", C.c_char*64), ("port", C.c_char*64), ("source", C.c_char*64)]
 
 
 @lru_cache(maxsize=1)
@@ -52,8 +54,14 @@ def library():
         "comm_f": ([ptr], C.c_int),
         "abort": ([ptr, err], None),
         "send": ([ptr, C.c_char_p, C.POINTER(View), C.POINTER(Options), err], C.c_int),
+        "submit": ([ptr,C.c_char_p,C.POINTER(View),C.POINTER(Options),C.POINTER(ptr),err],C.c_int),
+        "ticket_test": ([ptr,C.POINTER(C.c_int),err],C.c_int),
+        "ticket_wait": ([ptr,err],C.c_int),
+        "ticket_retain": ([ptr],None),
+        "ticket_release": ([ptr],None),
         "flush": ([ptr, err], C.c_int),
         "receive": ([ptr, C.c_char_p, C.POINTER(ptr), err], C.c_int),
+        "next_task": ([ptr,C.c_char_p,C.POINTER(ptr),err],C.c_int),
         "message_view": ([ptr, C.POINTER(View), err], C.c_int),
         "message_metadata": ([ptr, C.POINTER(Metadata), err], C.c_int),
         "complete": ([ptr, err], C.c_int),

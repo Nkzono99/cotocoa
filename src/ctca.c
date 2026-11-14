@@ -762,7 +762,7 @@ int CTCAR_wait(int64_t hdl)
 
 int CTCAR_test(int64_t hdl)
 {
-    int i, flag;
+    int i, flag, progress;
     double t0;
 
     if (prof_flag == 1)
@@ -773,6 +773,7 @@ int CTCAR_test(int64_t hdl)
         MPI_Abort(MPI_COMM_WORLD, 0);
     }
 
+    MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &progress, MPI_STATUS_IGNORE);
     MPI_Win_sync(win_reqstat);
     flag = 1;
     for (i = 0; i < req_maxreqs; i++)

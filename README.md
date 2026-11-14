@@ -31,8 +31,9 @@ coupling are described in [the high-level API design](docs/HIGH-LEVEL-API.md)
 same-language connections.
 The implementation provides fixed 1D–3D int32/float32/float64 snapshots, a native Coupler,
 and `cotocoa check/plan/run`. See [the build and usage guide](docs/HIGH-LEVEL-USAGE.md)
-and [runnable examples](examples/snapshot). Task API and multiple connections
-remain planned.
+and [runnable examples](examples/snapshot). Multiple ports, fan-out, multiple
+producer programs, and typed task submission with worker groups are covered in
+[Tasks and ports](docs/TASKS-AND-PORTS.md).
 
 ## Install
 

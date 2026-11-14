@@ -12,9 +12,11 @@ enum { COTOCOA_OK = 0, COTOCOA_END = 1,
        COTOCOA_INVALID = -1, COTOCOA_STATE = -2, COTOCOA_MEMORY = -3 };
 enum { COTOCOA_FLOAT64 = 1, COTOCOA_FLOAT32 = 2, COTOCOA_INT32 = 3,
        COTOCOA_ORDER_C = 0, COTOCOA_ORDER_F = 1 };
+enum { COTOCOA_STREAM = 0, COTOCOA_TASK = 1 };
 
 typedef struct cotocoa_context cotocoa_context;
 typedef struct cotocoa_message cotocoa_message;
+typedef struct cotocoa_ticket cotocoa_ticket;
 
 typedef struct {
     int code;
@@ -41,6 +43,8 @@ typedef struct {
     int64_t shape[3], global_shape[3], offset[3];
     char axes[3][64], units[64], time_unit[64];
     int dtype, ndim;
+    int kind, connection_id, source_count;
+    char name[64], port[64], source[64];
 } cotocoa_metadata;
 
 /* open/close are collective across the entire coupled job. config is a native
@@ -64,12 +68,24 @@ int cotocoa_send(cotocoa_context *ctx, const char *name,
                  const cotocoa_array_view *array,
                  const cotocoa_send_options *options, cotocoa_error *error);
 int cotocoa_flush(cotocoa_context *ctx, cotocoa_error *error);
+int cotocoa_submit(cotocoa_context *ctx, const char *operation,
+                   const cotocoa_array_view *array,
+                   const cotocoa_send_options *options,
+                   cotocoa_ticket **out, cotocoa_error *error);
+int cotocoa_ticket_test(cotocoa_ticket *ticket, int *done, cotocoa_error *error);
+int cotocoa_ticket_wait(cotocoa_ticket *ticket, cotocoa_error *error);
+void cotocoa_ticket_retain(cotocoa_ticket *ticket);
+void cotocoa_ticket_release(cotocoa_ticket *ticket);
 
 /* receive and complete are collective within the consumer group. Successful
  * receive transfers ownership of a local snapshot to the caller. Complete
  * acknowledges processing; release frees the local message, after complete. */
 int cotocoa_receive(cotocoa_context *ctx, const char *name,
                     cotocoa_message **out, cotocoa_error *error);
+/* NULL or "*" receives any incoming port. Named receive requires all incoming
+ * connections to use that port; it never silently skips queued messages. */
+int cotocoa_next_task(cotocoa_context *ctx, const char *operation,
+                      cotocoa_message **out, cotocoa_error *error);
 int cotocoa_message_view(const cotocoa_message *message,
                          cotocoa_array_view *out, cotocoa_error *error);
 int cotocoa_message_metadata(const cotocoa_message *message,

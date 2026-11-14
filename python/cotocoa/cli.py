@@ -24,9 +24,9 @@ def _coupler(path=None):
 
 
 def _commands(plan, coupler, manifest):
-    return [(plan.programs[plan.producer]["ranks"], plan.programs[plan.producer]["command"]),
-            (1, [coupler, str(manifest)]),
-            (plan.programs[plan.consumer]["ranks"], plan.programs[plan.consumer]["command"])]
+    before=[(plan.programs[name]['ranks'],plan.programs[name]['command']) for name in plan.producers]
+    after=[(plan.programs[name]['ranks'],plan.programs[name]['command']) for name in plan.consumers]
+    return [*before,(1,[coupler,str(manifest)]),*after]
 
 
 def main(argv=None):
@@ -44,15 +44,16 @@ def main(argv=None):
     try:
         plan = load_config(args.config)
         if args.action == "check":
-            print(f"valid: {plan.producer} -> {plan.consumer}; {plan.ranks} ranks including Coupler")
+            print(f"valid: {','.join(plan.producers)} -> {','.join(plan.consumers)}; {plan.ranks} ranks including Coupler")
         elif args.action == "plan":
-            print(json.dumps({"ranks": plan.ranks, "producer": plan.producer,
-                              "consumer": plan.consumer, "programs": plan.programs,
+            print(json.dumps({"ranks": plan.ranks, "producers": plan.producers,
+                              "consumers": plan.consumers, "programs": plan.programs,
+                              "connections": plan.connections,
                               "coupler_ranks": 1, "snapshot_bytes": plan.snapshot_bytes,
                               "producer_buffer_bytes": plan.producer_buffer_bytes,
-                              "consumer_buffer_bytes": plan.snapshot_bytes * plan.programs[plan.consumer]["ranks"],
+                              "consumer_buffer_bytes": plan.consumer_buffer_bytes,
                               "python_extra_copy_bytes_per_rank": plan.snapshot_bytes,
-                              "queue_capacity": plan.programs[plan.producer]["ranks"] * plan.connection["buffer_slots"]},
+                              "queue_capacity": plan.queue_capacity},
                              indent=2))
             if args.output:
                 args.output.write_text(plan.manifest(), encoding="utf-8")
@@ -78,14 +79,27 @@ def main(argv=None):
                         command.extend(["-n", str(ranks), *program])
                 else:
                     script = Path(directory) / "dispatch.sh"
-                    producer_ranks = commands[0][0]
-                    script.write_text(
-                        '#!/bin/sh\nset -eu\nrank=${SLURM_PROCID:?}\n'
-                        f'if [ "$rank" -lt {producer_ranks} ]; then\nexec {shlex.join(commands[0][1])}\n'
-                        f'elif [ "$rank" -eq {producer_ranks} ]; then\nexec {shlex.join(commands[1][1])}\n'
-                        f'else\nexec {shlex.join(commands[2][1])}\nfi\n', encoding="utf-8")
+                    dispatch=['#!/bin/sh','set -eu','rank=${SLURM_PROCID:?}']
+                    end=0
+                    for index,(ranks,program) in enumerate(commands):
+                        end+=ranks
+                        branch='if' if index==0 else 'elif'
+                        dispatch.extend([f'{branch} [ "$rank" -lt {end} ]; then',f'exec {shlex.join(program)}'])
+                    dispatch.extend(['else','echo "cotocoa: rank outside configured layout" >&2','exit 2','fi'])
+                    script.write_text('\n'.join(dispatch)+'\n',encoding='utf-8')
                     command = ["srun", "--kill-on-bad-exit=1", "/bin/sh", str(script)]
-                return subprocess.run(command, cwd=plan.config.parent, env=env, check=False).returncode
+                process=subprocess.Popen(command,cwd=plan.config.parent,env=env,start_new_session=True)
+                try:
+                    return process.wait(timeout=plan.runtime['timeout_seconds'] or None)
+                except subprocess.TimeoutExpired:
+                    import signal
+                    os.killpg(process.pid,signal.SIGTERM)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid,signal.SIGKILL)
+                        process.wait()
+                    raise ConfigError(f"run exceeded timeout_seconds={plan.runtime['timeout_seconds']}")
     except (ConfigError, OSError, ValueError) as exc:
         print(f"cotocoa: {exc}", file=sys.stderr)
         return 2

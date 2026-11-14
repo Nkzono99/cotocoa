@@ -2,8 +2,9 @@ module cotocoa
   use, intrinsic :: iso_c_binding
   implicit none
   private
-  public :: ctca_context, ctca_message, ctca_status
+  public :: ctca_context, ctca_message, ctca_status, ctca_ticket
   integer, parameter, public :: COTOCOA_FLOAT64=1, COTOCOA_FLOAT32=2, COTOCOA_INT32=3
+  integer, parameter, public :: COTOCOA_STREAM=0, COTOCOA_TASK=1
 
   type, bind(c) :: c_error
     integer(c_int) :: code
@@ -30,11 +31,25 @@ module cotocoa
     integer(c_int64_t) :: shape(3), global_shape(3), offset(3)
     character(c_char) :: axes(64, 3), units(64), time_unit(64)
     integer(c_int) :: dtype, ndim
+    integer(c_int) :: kind, connection_id, source_count
+    character(c_char) :: name(64), port(64), source(64)
   end type
 
   type :: ctca_status
     integer :: code = 0
     character(len=512) :: message = ''
+  end type
+
+  type :: ctca_ticket
+    private
+    type(c_ptr) :: handle=c_null_ptr
+  contains
+    procedure :: test => ticket_test
+    procedure :: wait => ticket_wait
+    procedure :: release => ticket_release
+    procedure, private :: assign_ticket => ticket_assign
+    generic :: assignment(=) => assign_ticket
+    final :: ticket_finalize
   end type
 
   type :: ctca_context
@@ -50,7 +65,14 @@ module cotocoa
     generic :: send => send_real64_1, send_real64_2, send_real64_3, &
                       send_real32_1, send_real32_2, send_real32_3, &
                       send_int32_1, send_int32_2, send_int32_3
+    procedure, private :: submit_real64_1, submit_real64_2, submit_real64_3
+    procedure, private :: submit_real32_1, submit_real32_2, submit_real32_3
+    procedure, private :: submit_int32_1, submit_int32_2, submit_int32_3
+    generic :: submit => submit_real64_1, submit_real64_2, submit_real64_3, &
+                        submit_real32_1, submit_real32_2, submit_real32_3, &
+                        submit_int32_1, submit_int32_2, submit_int32_3
     procedure :: receive => context_receive
+    procedure :: next_task => context_next_task
     procedure :: flush => context_flush
   end type
 
@@ -79,9 +101,53 @@ module cotocoa
     procedure :: time_unit => message_time_unit
     procedure :: dtype => message_dtype
     procedure :: ndim => message_ndim
+    procedure :: kind => message_kind
+    procedure :: name => message_name
+    procedure :: port => message_port
+    procedure :: source => message_source
+    procedure :: source_count => message_source_count
   end type
 
   interface
+    function c_submit(ctx,name,view,options,ticket,error) bind(c,name='cotocoa_submit') result(rc)
+      import
+      type(c_ptr), value :: ctx
+      character(kind=c_char), intent(in) :: name(*)
+      type(c_view), intent(in) :: view
+      type(c_options), intent(in) :: options
+      type(c_ptr), intent(out) :: ticket
+      type(c_error), intent(out) :: error
+      integer(c_int) :: rc
+    end function
+    function c_ticket_test(ticket,done,error) bind(c,name='cotocoa_ticket_test') result(rc)
+      import
+      type(c_ptr), value :: ticket
+      integer(c_int), intent(out) :: done
+      type(c_error), intent(out) :: error
+      integer(c_int) :: rc
+    end function
+    function c_ticket_wait(ticket,error) bind(c,name='cotocoa_ticket_wait') result(rc)
+      import
+      type(c_ptr), value :: ticket
+      type(c_error), intent(out) :: error
+      integer(c_int) :: rc
+    end function
+    subroutine c_ticket_retain(ticket) bind(c,name='cotocoa_ticket_retain')
+      import
+      type(c_ptr), value :: ticket
+    end subroutine
+    subroutine c_ticket_release(ticket) bind(c,name='cotocoa_ticket_release')
+      import
+      type(c_ptr), value :: ticket
+    end subroutine
+    function c_next_task(ctx,name,message,error) bind(c,name='cotocoa_next_task') result(rc)
+      import
+      type(c_ptr), value :: ctx
+      character(kind=c_char), intent(in) :: name(*)
+      type(c_ptr), intent(out) :: message
+      type(c_error), intent(out) :: error
+      integer(c_int) :: rc
+    end function
     function c_open(name, config, ctx, error) bind(c, name='cotocoa_open') result(rc)
       import
       character(c_char), intent(in) :: name(*), config(*)
@@ -177,6 +243,48 @@ module cotocoa
 
 contains
 
+  function ticket_test(self,status) result(done)
+    class(ctca_ticket), intent(in) :: self
+    type(ctca_status), optional, intent(out) :: status
+    logical :: done
+    integer(c_int) :: flag,rc
+    type(c_error) :: error
+    flag=0
+    rc=c_ticket_test(self%handle,flag,error)
+    done=flag/=0
+    call report(rc,error,c_null_ptr,status)
+  end function
+
+  subroutine ticket_wait(self,status)
+    class(ctca_ticket), intent(in) :: self
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    integer(c_int) :: rc
+    rc=c_ticket_wait(self%handle,error)
+    call report(rc,error,c_null_ptr,status)
+  end subroutine
+
+  subroutine ticket_release(self)
+    class(ctca_ticket), intent(inout) :: self
+    if(c_associated(self%handle)) call c_ticket_release(self%handle)
+    self%handle=c_null_ptr
+  end subroutine
+
+  subroutine ticket_finalize(self)
+    type(ctca_ticket), intent(inout) :: self
+    call self%release()
+  end subroutine
+
+  subroutine ticket_assign(self,other)
+    class(ctca_ticket), intent(inout) :: self
+    type(ctca_ticket), intent(in) :: other
+    type(c_ptr) :: copy
+    copy=other%handle
+    call c_ticket_retain(copy)
+    call self%release()
+    self%handle=copy
+  end subroutine
+
   subroutine report(rc, error, ctx, status)
     integer(c_int), intent(in) :: rc
     type(c_error), intent(in) :: error
@@ -264,6 +372,27 @@ contains
       has_message = rc == 0
     end if
     call report(rc, error, self%handle, status)
+  end subroutine
+
+  subroutine context_next_task(self,name,message,has_task,status)
+    class(ctca_context), intent(inout) :: self
+    character(len=*), intent(in) :: name
+    type(ctca_message), intent(inout) :: message
+    logical, intent(out) :: has_task
+    type(ctca_status), optional, intent(out) :: status
+    type(c_error) :: error
+    integer(c_int) :: rc
+    has_task=.false.
+    if(c_associated(message%handle)) then
+      call local_error(error,'previous task must be completed')
+      call c_abort(self%handle,error)
+    end if
+    rc=c_next_task(self%handle,trim(name)//c_null_char,message%handle,error)
+    if(rc==0) then
+      rc=c_get_metadata(message%handle,message%meta,error)
+      has_task=rc==0
+    end if
+    call report(rc,error,self%handle,status)
   end subroutine
 
   subroutine context_flush(self, status)
@@ -380,5 +509,31 @@ contains
     class(ctca_message), intent(in) :: self
     integer :: value
     value = self%meta%ndim
+  end function
+
+  function message_kind(self) result(value)
+    class(ctca_message), intent(in) :: self
+    integer :: value
+    value=self%meta%kind
+  end function
+  function message_source_count(self) result(value)
+    class(ctca_message), intent(in) :: self
+    integer :: value
+    value=self%meta%source_count
+  end function
+  function message_name(self) result(value)
+    class(ctca_message), intent(in) :: self
+    character(len=64) :: value
+    value=label(self%meta%name)
+  end function
+  function message_port(self) result(value)
+    class(ctca_message), intent(in) :: self
+    character(len=64) :: value
+    value=label(self%meta%port)
+  end function
+  function message_source(self) result(value)
+    class(ctca_message), intent(in) :: self
+    character(len=64) :: value
+    value=label(self%meta%source)
   end function
 end module cotocoa

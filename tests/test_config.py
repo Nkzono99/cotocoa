@@ -28,7 +28,7 @@ def test_plan_and_manifest(tmp_path, config):
     plan = load_config(write(tmp_path, config))
     assert plan.ranks == 5
     assert plan.producer_buffer_bytes == 3360
-    assert plan.manifest().splitlines()[0] == "COTOCOA_MANIFEST 2"
+    assert plan.manifest().splitlines()[0] == "COTOCOA_MANIFEST 3"
     assert len(plan.manifest().splitlines()[1]) == 64
     assert plan.manifest() == load_config(plan.config).manifest()
 
@@ -59,7 +59,7 @@ def test_missing_executable_and_fanout(tmp_path, config):
     with pytest.raises(ConfigError, match="executable"):
         load_config(write(tmp_path, config))
     original["connections"] *= 2
-    with pytest.raises(ConfigError, match="one connection"):
+    with pytest.raises(ConfigError, match="duplicate connection"):
         load_config(write(tmp_path, original))
 
 
@@ -99,4 +99,42 @@ def test_supported_array_schema(tmp_path, config, dtype, unit, code, ndim):
     c['axes'] = ['x','y','z'][:ndim]
     plan = load_config(write(tmp_path,config))
     assert plan.snapshot_bytes == [3,15,105][ndim-1]*unit
-    assert plan.manifest().splitlines()[-1] == f'{code} {ndim}'
+    assert f'{code} {ndim} 2 0 0 0' in plan.manifest().splitlines()
+
+
+def test_fanout_and_multiple_ports(tmp_path,config):
+    config['programs']['other']={'command':['/bin/true'],'ranks':1}
+    c=copy.deepcopy(config['connections'][0])
+    c['name']='second_destination'
+    c['to']='other.field'
+    config['connections'].append(c)
+    plan=load_config(write(tmp_path,config))
+    assert plan.producers==('producer',)
+    assert plan.consumers==('consumer','other')
+    assert plan.ranks==6
+    assert plan.queue_capacity==8
+    assert plan.producer_buffer_bytes==6720
+
+
+def test_task_groups_and_role_validation(tmp_path,config):
+    c=config['connections'][0]
+    c['kind']='task'
+    config['programs']['consumer']['group_size']=1
+    plan=load_config(write(tmp_path,config))
+    assert plan.programs['consumer']['group_size']==1
+    c['kind']='stream'
+    with pytest.raises(ConfigError,match='worker groups'):
+        load_config(write(tmp_path,config))
+
+
+def test_ambiguous_fanout_and_cycles(tmp_path,config):
+    second=copy.deepcopy(config['connections'][0])
+    second['name']='second'
+    second['kind']='task'
+    second['to']='consumer.other'
+    config['connections'].append(second)
+    with pytest.raises(ConfigError,match='fan-out'):
+        load_config(write(tmp_path,config))
+    second.update({'from':'consumer.other','to':'producer.field','kind':'stream'})
+    with pytest.raises(ConfigError,match='roles|cycles'):
+        load_config(write(tmp_path,config))
