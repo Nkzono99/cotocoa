@@ -1,0 +1,19 @@
+schema: 1
+programs:
+  producer:
+    command: [../../build/task_fortran, producer]
+    ranks: 2
+  consumer:
+    command: [../../.venv/bin/python, python.py, consumer]
+    ranks: 2
+    group_size: 1
+connections:
+  - name: sum_tasks
+    from: producer.sum
+    to: consumer.sum
+    kind: task
+    dtype: float64
+    shape: [3]
+    global_shape: [3]
+    axes: [item]
+    buffer_slots: 2

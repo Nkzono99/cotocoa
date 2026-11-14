@@ -1,0 +1,22 @@
+schema: 1
+programs:
+  producer:
+    command: ["../../build/snapshot_fortran", "producer"]
+    ranks: 2
+  consumer:
+    command: ["../../build/snapshot_fortran", "consumer"]
+    ranks: 1
+connections:
+  - name: potential
+    from: producer.potential
+    to: consumer.potential
+    dtype: float64
+    shape: [3, 5, 7]
+    global_shape: [6, 5, 7]
+    axes: [x, y, z]
+    units: V
+    time_unit: s
+    mode: snapshot
+    distribution: shards
+    delivery: all
+    buffer_slots: 2

@@ -1,0 +1,11 @@
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+find_dependency(MPI COMPONENTS C)
+set(cotocoa_Fortran_FOUND @COTOCOA_ENABLE_FORTRAN@)
+if("Fortran" IN_LIST cotocoa_FIND_COMPONENTS)
+    if(cotocoa_Fortran_FOUND)
+        find_dependency(MPI COMPONENTS Fortran)
+    endif()
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/cotocoaTargets.cmake")
+check_required_components(cotocoa)

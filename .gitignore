@@ -1075,5 +1075,12 @@ dkms.conf
 
 # Raspberry Pi Pico Object file
 *.uf2
+
+# Local Python environment and high-level API development artifacts
+.venv/
+.pytest_cache/
+*.egg-info/
+.cotocoa-*/
+.cotocoa/
 # Raspberry Pi Pico disassembler file
 *.dis
