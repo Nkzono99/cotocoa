@@ -23,6 +23,14 @@ Developers of CoToCoA:
 - Youhei Sunada (Kobe Univ., Japan)
 - Haichao Zhao (Kyoto Univ., Japan)
 
+## Fork development
+
+This fork's proposed Fortran, C, and Python interfaces and configuration-driven
+coupling are described in [the high-level API design](docs/HIGH-LEVEL-API.md)
+(Japanese). All three languages can act as producers or consumers, including
+same-language connections.
+The proposed API and CLI are not implemented yet.
+
 ## Install
 
 ### ctca
