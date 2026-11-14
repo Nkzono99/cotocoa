@@ -12,6 +12,13 @@ Fortran の generic send/copy_to は3型×3次元の overload を提供する。
 
 ## ビルドと導入
 
+このforkの高水準APIは `main` ブランチにある。既定の `master` とは分けて取得する。
+
+```sh
+git clone --branch main https://github.com/Nkzono99/cotocoa.git
+cd cotocoa
+```
+
 C と Fortran の MPI 3 以降のコンパイラ、CMake 3.16 以降、Python 3.10 以降が必要。
 各 binding とバックエンドは同じ MPI 実装を使う。
 次は Intel MPI のビルド例。Open MPI 等では対応する `mpicc/mpifort` を指定する。

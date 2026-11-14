@@ -25,6 +25,10 @@ Developers of CoToCoA:
 
 ## Fork development
 
+The high-level API is on this fork's `main` branch. The existing default
+`master` branch is retained. Clone with `git clone --branch main
+https://github.com/Nkzono99/cotocoa.git` to use these additions.
+
 This fork's Fortran, C, and Python interfaces and configuration-driven
 coupling are described in [the high-level API design](docs/HIGH-LEVEL-API.md)
 (Japanese). All three languages can act as producers or consumers, including

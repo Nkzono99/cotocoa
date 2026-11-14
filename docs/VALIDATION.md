@@ -17,6 +17,8 @@ KUDPC System A の計算ノードで検証した。環境は `SysA/2022`、`inte
 | 9179645 | installed probe、借用fan-outと早期ticket解放、3言語Task例、watchdog、native待機上限、rank不一致、旧Python、失敗後のprobe | 14ケース通過 |
 | 9179647 | commit `83fe152` のclean archive、native全target、pytest37件、CTest、実wheel、借用Fortran→PythonとAssembler | 通過 |
 | 9179660 | Assemblerの8枚の3D tile、時刻付き・順不同sourceの組み立て、公開Task/snapshot設定のcheck | 通過 |
+| 9179701 | マージ前の既存公開interfaceの差分照合、旧library全176exportの保持、既存C/Fortranサンプルの無変更ビルド | 通過 |
+| 9179728 | 既存sample1(C)・sample2(Fortran)各40処理結果、sample4(Python Worker)20受信・profiling・finalize | 全件通過 |
 
 複数接続の20ケースでは、stream/Taskそれぞれ全9言語間に9型・次元のportを同時に使う。
 これは162通りの言語・型・次元・kindの組合せとなる。Taskの2 worker groups、
@@ -39,6 +41,25 @@ clean archiveは既存build、`.venv`、生成ログ、未追跡ファイルを�
 そのソースでnativeを新規ビルドし、2つの実wheelをsource外のsite directoryへ導入する。
 元のeditable packageを使わずにimportと旧Workerのライブラリ探索を検査し、
 新規native probe、負strideの借用Fortran、wheel版Python、global assemblyを5 rankで連携させた。
+
+## 2026-11-15 のマージ前互換性確認
+
+基点 `8f705f8` と比べ、`include/ctca.h`、`src/ctca_mod.f90`、
+`src/ctca_int8_mod.f90`、`src/ctca_f.c` と従来の `test/` は変更していない。
+基点のC実装を別の共有libraryとしてビルドし、その全176exportが新libraryにもあることを照合した。
+MPI未初期化の既存コードは従来どおり初期化・終了する。MPI初期化済みの経路は、
+既存MPIを借用し、利用者のMPIを終了しないよう拡張している。
+
+従来sample1/sample2/sample4のソースをそのまま新libraryへリンクして実行した。
+C/Fortranは各4 requester ranks、1 Coupler、8+4+4 worker ranksの21 rank構成で、
+元の4 rank worker groupを維持する。各10依頼×4 rankの値をすべて照合した。
+Fortran出力はlist-directedの折り返しを正規化し、全400×6要素を比較している。
+Python例は元の4+1+2の7 rankで20受信の値を比較し、3役割のprofilingと正常終了も確認した。
+
+ビルドは `tssrun -p gr20001a -t 0:05:00 --rsc p=1:t=2:c=2` の中で
+`bash tests/verify_legacy_samples.sh`、実行は
+`sbatch tests/kudpc-legacy-samples.sbatch`（`-t 0:05:00 --rsc p=21:t=1:c=1`）。
+ログと生成データは `build/legacy-samples-9179728/` に残す。
 
 ## 再実行
 
