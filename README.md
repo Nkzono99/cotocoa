@@ -29,9 +29,9 @@ This fork's proposed Fortran, C, and Python interfaces and configuration-driven
 coupling are described in [the high-level API design](docs/HIGH-LEVEL-API.md)
 (Japanese). All three languages can act as producers or consumers, including
 same-language connections.
-The first implementation provides fixed 3D float64 snapshots, a native Coupler,
+The implementation provides fixed 1D–3D int32/float32/float64 snapshots, a native Coupler,
 and `cotocoa check/plan/run`. See [the build and usage guide](docs/HIGH-LEVEL-USAGE.md)
-and [runnable examples](examples/snapshot). Task API and additional data types
+and [runnable examples](examples/snapshot). Task API and multiple connections
 remain planned.
 
 ## Install

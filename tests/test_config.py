@@ -28,13 +28,13 @@ def test_plan_and_manifest(tmp_path, config):
     plan = load_config(write(tmp_path, config))
     assert plan.ranks == 5
     assert plan.producer_buffer_bytes == 3360
-    assert plan.manifest().splitlines()[0] == "COTOCOA_MANIFEST 1"
+    assert plan.manifest().splitlines()[0] == "COTOCOA_MANIFEST 2"
     assert len(plan.manifest().splitlines()[1]) == 64
     assert plan.manifest() == load_config(plan.config).manifest()
 
 
 @pytest.mark.parametrize("key,value", [
-    ("delivery", "latest"), ("dtype", "float32"), ("buffer_slots", 4095),
+    ("delivery", "latest"), ("dtype", "float16"), ("buffer_slots", 4095),
     ("buffer_slots", True), ("shape", [0, 5, 7]), ("shape", [3, 5]),
     ("shape", [2**40, 5, 7]), ("axes", ["x", "x", "z"]),
     ("units", "V\ninjected"), ("global_shape", [2, 5, 7]),
@@ -87,3 +87,16 @@ def test_executable_symlink_preserves_virtual_environment(tmp_path, config):
     plan = load_config(write(tmp_path, config))
     assert plan.programs["producer"]["command"][0] == str(executable)
     assert plan.programs["producer"]["command"][0] != str(executable.resolve())
+
+
+@pytest.mark.parametrize('dtype,unit,code', [('float64',8,1),('float32',4,2),('int32',4,3)])
+@pytest.mark.parametrize('ndim', [1,2,3])
+def test_supported_array_schema(tmp_path, config, dtype, unit, code, ndim):
+    c = config['connections'][0]
+    c['dtype'] = dtype
+    c['shape'] = [3,5,7][:ndim]
+    c['global_shape'] = [6,5,7][:ndim]
+    c['axes'] = ['x','y','z'][:ndim]
+    plan = load_config(write(tmp_path,config))
+    assert plan.snapshot_bytes == [3,15,105][ndim-1]*unit
+    assert plan.manifest().splitlines()[-1] == f'{code} {ndim}'

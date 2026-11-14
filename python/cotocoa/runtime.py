@@ -55,20 +55,23 @@ class Context:
         error = Error(-2, text.encode("utf-8", errors="replace")[:511])
         self._lib.cotocoa_abort(self._handle, C.byref(error))
 
-    def send(self, name, array, *, step, time=None, offset=(0, 0, 0)):
+    def send(self, name, array, *, step, time=None, offset=None):
         self._require_open()
         import numpy as np
-        if not isinstance(array, np.ndarray) or array.dtype != np.dtype("float64") or array.ndim != 3:
-            raise ValueError("send requires a native float64 NumPy array with three dimensions")
-        if len(offset) != 3:
-            raise ValueError("offset must have three elements")
+        types = {np.dtype("float64"): 1, np.dtype("float32"): 2, np.dtype("int32"): 3}
+        if not isinstance(array, np.ndarray) or array.dtype not in types or not 1 <= array.ndim <= 3:
+            raise ValueError("send requires a native int32/float32/float64 NumPy array with one to three dimensions")
+        offset = (0,)*array.ndim if offset is None else offset
+        if len(offset) != array.ndim:
+            raise ValueError("offset must match the array's dimensions")
         options = Options()
         options.step = _int64(step, "step")
         options.has_time = time is not None
         options.time = 0.0 if time is None else time
-        options.offset[:] = [_int64(x, "offset") for x in offset]
-        view = View(array.ctypes.data, 1, 3,
-                    (C.c_int64 * 3)(*array.shape), (C.c_int64 * 3)(*array.strides))
+        options.offset[:] = [_int64(x, "offset") for x in offset] + [0]*(3-array.ndim)
+        view = View(array.ctypes.data, types[array.dtype], array.ndim,
+                    (C.c_int64 * 3)(*(array.shape + (1,)*(3-array.ndim))),
+                    (C.c_int64 * 3)(*(array.strides + (0,)*(3-array.ndim))))
         error = Error()
         _check(self._lib.cotocoa_send(self._handle, name.encode(), C.byref(view),
                                     C.byref(options), C.byref(error)), error)
@@ -110,10 +113,15 @@ class Message:
         _check(context._lib.cotocoa_message_view(handle, C.byref(view), C.byref(error)), error)
         self.step, self.sequence, self.source_rank = meta.step, meta.sequence, meta.source_rank
         self.time = meta.time if meta.has_time else None
-        self.shape, self.global_shape, self.offset = tuple(meta.shape), tuple(meta.global_shape), tuple(meta.offset)
-        self.axes = tuple(bytes(axis).split(b"\0", 1)[0].decode() for axis in meta.axes)
+        self.shape = tuple(meta.shape)[:meta.ndim]
+        self.global_shape, self.offset = tuple(meta.global_shape)[:meta.ndim], tuple(meta.offset)[:meta.ndim]
+        self.axes = tuple(bytes(axis).split(b"\0", 1)[0].decode() for axis in meta.axes[:meta.ndim])
         self.units, self.time_unit = meta.units.decode(), meta.time_unit.decode()
-        pointer = C.cast(view.data, C.POINTER(C.c_double))
+        dtype, ctype = {1: (np.dtype("float64"), C.c_double),
+                        2: (np.dtype("float32"), C.c_float),
+                        3: (np.dtype("int32"), C.c_int32)}[meta.dtype]
+        self.dtype = dtype
+        pointer = C.cast(view.data, C.POINTER(ctype))
         # A NumPy-owned copy keeps saved arrays valid after Message/Context close.
         raw = np.ctypeslib.as_array(pointer, shape=(int(np.prod(self.shape)),))
         self.array = np.array(raw.reshape(self.shape, order="F"), order="F", copy=True)

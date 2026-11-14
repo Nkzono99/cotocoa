@@ -66,8 +66,8 @@ def _label(value, where):
 
 
 def _shape(value, where):
-    if not isinstance(value, list) or len(value) != 3:
-        raise ConfigError(f"{where}: this version supports exactly three dimensions")
+    if not isinstance(value, list) or not 1 <= len(value) <= 3:
+        raise ConfigError(f"{where}: expected one to three dimensions")
     return [_integer(x, where, 2**63-1) for x in value]
 
 
@@ -85,7 +85,8 @@ class Plan:
 
     @property
     def snapshot_bytes(self):
-        return math.prod(self.connection["shape"]) * 8
+        unit = {"int32": 4, "float32": 4, "float64": 8}[self.connection["dtype"]]
+        return math.prod(self.connection["shape"]) * unit
 
     @property
     def producer_buffer_bytes(self):
@@ -96,13 +97,16 @@ class Plan:
         canonical = json.dumps({"programs": self.programs, "connection": c},
                                sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(canonical.encode()).hexdigest()
-        lines = ["COTOCOA_MANIFEST 1", digest,
+        ndim = len(c["shape"])
+        dtype = {"float64": 1, "float32": 2, "int32": 3}[c["dtype"]]
+        lines = ["COTOCOA_MANIFEST 2", digest,
                  f"{self.producer} {self.programs[self.producer]['ranks']}",
                  f"{self.consumer} {self.programs[self.consumer]['ranks']}",
                  c["name"], c["from"].split(".")[1], c["to"].split(".")[1],
-                 " ".join(map(str, c["shape"])),
-                 " ".join(map(str, c["global_shape"])), str(c["buffer_slots"]),
-                 *c["axes"], c["units"], c["time_unit"]]
+                 " ".join(map(str, c["shape"] + [1]*(3-ndim))),
+                 " ".join(map(str, c["global_shape"] + [1]*(3-ndim))), str(c["buffer_slots"]),
+                 *(c["axes"] + [f"axis_{d}" for d in range(ndim, 3)]),
+                 c["units"], c["time_unit"], f"{dtype} {ndim}"]
         return "\n".join(lines) + "\n"
 
 
@@ -162,20 +166,23 @@ def load_config(path, *, check_executables=True):
         endpoints.append(program)
     if endpoints[0] == endpoints[1]:
         raise ConfigError("producer and consumer must be different programs")
-    defaults = {"mode": "snapshot", "distribution": "shards", "delivery": "all", "dtype": "float64"}
+    defaults = {"mode": "snapshot", "distribution": "shards", "delivery": "all"}
     for key, expected in defaults.items():
         if c.setdefault(key, expected) != expected:
             raise ConfigError(f"unsupported {key}: {c[key]!r}; this version requires {expected}")
+    if c["dtype"] not in {"int32", "float32", "float64"}:
+        raise ConfigError("dtype must be int32, float32 or float64")
     c["shape"] = _shape(c["shape"], "shape")
     c["global_shape"] = _shape(c["global_shape"], "global_shape")
-    if any(g < s for s, g in zip(c["shape"], c["global_shape"])):
+    ndim = len(c["shape"])
+    if len(c["global_shape"]) != ndim or any(g < s for s, g in zip(c["shape"], c["global_shape"])):
         raise ConfigError("global_shape must cover the local shape")
     if math.prod(c["shape"]) > (2**31-1)//8:
         raise ConfigError("snapshot exceeds the current 2 GiB transport limit")
-    if not isinstance(c["axes"], list) or len(c["axes"]) != 3:
-        raise ConfigError("axes must name three logical axes")
+    if not isinstance(c["axes"], list) or len(c["axes"]) != ndim:
+        raise ConfigError("axes must name each logical dimension")
     c["axes"] = [_name(x, "axis") for x in c["axes"]]
-    if len(set(c["axes"])) != 3:
+    if len(set(c["axes"])) != ndim:
         raise ConfigError("axis names must be unique")
     for key in ("units", "time_unit"):
         c[key] = _label(c.get(key, "1"), key)

@@ -24,6 +24,7 @@ typedef struct {
     char source_port[64], target_port[64];
     char axes[3][64], units[64], time_unit[64];
     int producer_ranks, consumer_ranks, slots;
+    int dtype, ndim;
     int64_t shape[3], global_shape[3];
     uint64_t file_hash;
 } manifest;
@@ -33,18 +34,30 @@ struct cotocoa_context {
     int role, rank, owns_mpi, area, ended, next_slot;
     size_t elements;
     int64_t sequence, *handles, *received_sequences;
-    double *buffer;
+    char *buffer;
     cotocoa_message *active;
 };
 
 struct cotocoa_message {
     cotocoa_context *context;
     cotocoa_metadata metadata;
-    double *data;
+    void *data;
     int completed;
 };
 
 static int context_used;
+
+static size_t itemsize(int dtype)
+{
+    return dtype == COTOCOA_FLOAT64 ? 8 :
+        (dtype == COTOCOA_FLOAT32 || dtype == COTOCOA_INT32 ? 4 : 0);
+}
+
+static MPI_Datatype mpi_type(int dtype)
+{
+    return dtype == COTOCOA_FLOAT64 ? MPI_DOUBLE :
+        (dtype == COTOCOA_FLOAT32 ? MPI_FLOAT : MPI_INT32_T);
+}
 
 static int fail(cotocoa_error *error, int code, const char *format, ...)
 {
@@ -121,7 +134,10 @@ static int read_manifest(const char *path, manifest *p, cotocoa_error *error)
         if (++length > 8192) goto done;
     }
     rewind(file);
-    if (!line(file, text, sizeof(text)) || strcmp(text, "COTOCOA_MANIFEST 1")) goto done;
+    if (!line(file, text, sizeof(text))) goto done;
+    int version = !strcmp(text, "COTOCOA_MANIFEST 2") ? 2 :
+        (!strcmp(text, "COTOCOA_MANIFEST 1") ? 1 : 0);
+    if (!version) goto done;
     if (!line(file, text, sizeof(text)) || strlen(text) != 64) goto done;
     memcpy(p->digest, text, sizeof(p->digest));
     for (int i = 0; i < 64; ++i)
@@ -144,7 +160,12 @@ static int read_manifest(const char *path, manifest *p, cotocoa_error *error)
     for (int i = 0; i < 3; ++i)
         if (!line(file, p->axes[i], sizeof(p->axes[i])) || !token(p->axes[i])) goto done;
     if (!line(file, p->units, sizeof(p->units)) ||
-        !line(file, p->time_unit, sizeof(p->time_unit)) || fgetc(file) != EOF) goto done;
+        !line(file, p->time_unit, sizeof(p->time_unit))) goto done;
+    p->dtype = COTOCOA_FLOAT64;
+    p->ndim = 3;
+    if (version == 2 && (!line(file, text, sizeof(text)) ||
+        sscanf(text, "%d %d %c", &p->dtype, &p->ndim, &extra) != 2)) goto done;
+    if (fgetc(file) != EOF || !itemsize(p->dtype) || p->ndim < 1 || p->ndim > 3) goto done;
     if (!token(p->producer) || !token(p->consumer) || !token(p->field) ||
         !token(p->source_port) || !token(p->target_port) ||
         !strcmp(p->producer, p->consumer) || !strcmp(p->producer, "__coupler__") ||
@@ -155,6 +176,7 @@ static int read_manifest(const char *path, manifest *p, cotocoa_error *error)
         p->producer_ranks > INT_MAX/p->slots) goto done;
     size_t elements = 1;
     for (int i = 0; i < 3; ++i) {
+        if (i >= p->ndim && (p->shape[i] != 1 || p->global_shape[i] != 1)) goto done;
         if (p->shape[i] < 1 || p->global_shape[i] < p->shape[i] ||
             p->shape[i] > INT_MAX/8 || elements > (size_t)(INT_MAX/8)/p->shape[i]) goto done;
         elements *= (size_t)p->shape[i];
@@ -242,7 +264,7 @@ int cotocoa_open(const char *name, const char *config,
         (world_rank == p->producer_ranks ? COUPLER : CONSUMER);
     ctx->elements = (size_t)p->shape[0]*(size_t)p->shape[1]*(size_t)p->shape[2];
     if (ctx->role == PRODUCER) {
-        ctx->buffer = calloc(ctx->elements*(size_t)p->slots, sizeof(double));
+        ctx->buffer = calloc(ctx->elements*(size_t)p->slots, itemsize(p->dtype));
         ctx->handles = calloc((size_t)p->slots, sizeof(int64_t));
         bad = !ctx->buffer || !ctx->handles;
     } else if (ctx->role == CONSUMER) {
@@ -259,10 +281,19 @@ int cotocoa_open(const char *name, const char *config,
     else
         CTCAW_init_detail(1, p->consumer_ranks, 1, HEADER_WORDS);
     MPI_Comm_rank(CTCA_subcomm, &ctx->rank);
-    if (ctx->role == PRODUCER)
-        CTCAR_regarea_real8(ctx->buffer, ctx->elements*(size_t)p->slots, &ctx->area);
-    else if (ctx->role == COUPLER) CTCAC_regarea_real8(&ctx->area);
-    else CTCAW_regarea_real8(&ctx->area);
+    if (p->dtype == COTOCOA_FLOAT64) {
+        if (ctx->role == PRODUCER) CTCAR_regarea_real8((double *)ctx->buffer, ctx->elements*(size_t)p->slots, &ctx->area);
+        else if (ctx->role == COUPLER) CTCAC_regarea_real8(&ctx->area);
+        else CTCAW_regarea_real8(&ctx->area);
+    } else if (p->dtype == COTOCOA_FLOAT32) {
+        if (ctx->role == PRODUCER) CTCAR_regarea_real4((float *)ctx->buffer, ctx->elements*(size_t)p->slots, &ctx->area);
+        else if (ctx->role == COUPLER) CTCAC_regarea_real4(&ctx->area);
+        else CTCAW_regarea_real4(&ctx->area);
+    } else {
+        if (ctx->role == PRODUCER) CTCAR_regarea_int((int *)ctx->buffer, ctx->elements*(size_t)p->slots, &ctx->area);
+        else if (ctx->role == COUPLER) CTCAC_regarea_int(&ctx->area);
+        else CTCAW_regarea_int(&ctx->area);
+    }
     *out = ctx;
     return COTOCOA_OK;
 }
@@ -277,18 +308,18 @@ MPI_Fint cotocoa_comm_f(const cotocoa_context *ctx)
     return MPI_Comm_c2f(cotocoa_comm(ctx));
 }
 
-cotocoa_array_view cotocoa_view_f64(const double *data, int ndim,
-                                   const int64_t shape[3], int order)
+static cotocoa_array_view make_view(const void *data, int dtype, int ndim,
+                                   const int64_t *shape, int order)
 {
     cotocoa_array_view view = {0};
     view.data = data;
-    view.dtype = COTOCOA_FLOAT64;
+    view.dtype = dtype;
     view.ndim = ndim;
-    if (!shape || ndim != 3 || (order != COTOCOA_ORDER_C && order != COTOCOA_ORDER_F)) return view;
-    memcpy(view.shape, shape, sizeof(view.shape));
-    int64_t stride = sizeof(double);
-    for (int d = 0; d < 3; ++d) {
-        int i = order == COTOCOA_ORDER_F ? d : 2-d;
+    if (!shape || ndim < 1 || ndim > 3 || (order != COTOCOA_ORDER_C && order != COTOCOA_ORDER_F)) return view;
+    for (int d = 0; d < 3; ++d) view.shape[d] = d < ndim ? shape[d] : 1;
+    int64_t stride = (int64_t)itemsize(dtype);
+    for (int d = 0; d < ndim; ++d) {
+        int i = order == COTOCOA_ORDER_F ? d : ndim-1-d;
         if (shape[i] < 1 || shape[i] > INT64_MAX/stride) {
             memset(view.strides, 0, sizeof(view.strides));
             return view;
@@ -298,6 +329,13 @@ cotocoa_array_view cotocoa_view_f64(const double *data, int ndim,
     }
     return view;
 }
+
+cotocoa_array_view cotocoa_view_f64(const double *data, int ndim, const int64_t *shape, int order)
+{ return make_view(data, COTOCOA_FLOAT64, ndim, shape, order); }
+cotocoa_array_view cotocoa_view_f32(const float *data, int ndim, const int64_t *shape, int order)
+{ return make_view(data, COTOCOA_FLOAT32, ndim, shape, order); }
+cotocoa_array_view cotocoa_view_i32(const int32_t *data, int ndim, const int64_t *shape, int order)
+{ return make_view(data, COTOCOA_INT32, ndim, shape, order); }
 
 cotocoa_send_options cotocoa_send_defaults(void)
 {
@@ -311,29 +349,33 @@ int cotocoa_send(cotocoa_context *ctx, const char *name,
 {
     if (!ctx || ctx->role != PRODUCER || !name || !array || !array->data)
         return fail(error, COTOCOA_INVALID, "send requires a producer Context and array");
-    if (strcmp(name, ctx->plan.source_port) || array->dtype != COTOCOA_FLOAT64 || array->ndim != 3)
+    if (strcmp(name, ctx->plan.source_port) || array->dtype != ctx->plan.dtype || array->ndim != ctx->plan.ndim)
         return fail(error, COTOCOA_INVALID, "send: unknown port, dtype or dimensions");
     cotocoa_send_options defaults = cotocoa_send_defaults();
     if (!options) options = &defaults;
     if (ctx->sequence == INT64_MAX || (options->has_time && !isfinite(options->time)))
         return fail(error, COTOCOA_INVALID, "send: invalid sequence or non-finite time");
-    int64_t span = 0;
+    size_t unit = itemsize(array->dtype);
+    uint64_t span = 0;
     for (int d = 0; d < 3; ++d) {
-        if (array->shape[d] != ctx->plan.shape[d] || array->strides[d] < 8 ||
+        if (array->shape[d] != ctx->plan.shape[d] ||
             options->offset[d] < 0 || options->offset[d] > ctx->plan.global_shape[d]-array->shape[d] ||
-            array->strides[d] > (PTRDIFF_MAX-span)/(array->shape[d]))
+            array->strides[d] == INT64_MIN)
             return fail(error, COTOCOA_INVALID, "send: shape, stride or global offset mismatch at axis %d", d);
-        span += (array->shape[d]-1)*array->strides[d];
+        uint64_t stride = (uint64_t)(array->strides[d] < 0 ? -array->strides[d] : array->strides[d]);
+        if (array->shape[d] > 1 && (!stride || stride > (PTRDIFF_MAX-span)/(uint64_t)(array->shape[d]-1)))
+            return fail(error, COTOCOA_INVALID, "send: invalid or overflowing stride at axis %d", d);
+        span += (uint64_t)(array->shape[d]-1)*stride;
     }
     int slot = ctx->next_slot;
     if (ctx->handles[slot]) CTCAR_wait(ctx->handles[slot]);
-    double *dest = ctx->buffer + (size_t)slot*ctx->elements;
+    char *dest = ctx->buffer + (size_t)slot*ctx->elements*unit;
     const char *base = array->data;
     size_t n = 0;
     for (int64_t k = 0; k < array->shape[2]; ++k)
         for (int64_t j = 0; j < array->shape[1]; ++j)
             for (int64_t i = 0; i < array->shape[0]; ++i)
-                memcpy(dest + n++, base + i*array->strides[0] + j*array->strides[1] + k*array->strides[2], 8);
+                memcpy(dest + n++*unit, base + i*array->strides[0] + j*array->strides[1] + k*array->strides[2], unit);
     ctca_sync_area(ctx->area);
     int header[HEADER_WORDS] = {0};
     header[0] = MAGIC; header[1] = 1; header[2] = 1;
@@ -349,6 +391,8 @@ int cotocoa_send(cotocoa_context *ctx, const char *name,
     }
     put64(header, 24, ctx->elements);
     digest_words(ctx->plan.digest, header + 26);
+    header[34] = ctx->plan.dtype;
+    header[35] = ctx->plan.ndim;
     CTCAR_sendreq_hdl(header, HEADER_WORDS, &ctx->handles[slot]);
     ctx->next_slot = (slot+1)%ctx->plan.slots;
     return COTOCOA_OK;
@@ -375,7 +419,8 @@ static int validate_header(cotocoa_context *ctx, const int *h, int source,
         h[4] != source || (h[5] != 0 && h[5] != 1) ||
         get64(h, 6) < 1 || get64(h, 6) > INT64_MAX ||
         h[3] != (int)((get64(h, 6)-1) % (uint64_t)ctx->plan.slots) ||
-        get64(h, 24) != ctx->elements || memcmp(h+26, digest, sizeof(digest)))
+        get64(h, 24) != ctx->elements || memcmp(h+26, digest, sizeof(digest)) ||
+        h[34] != ctx->plan.dtype || h[35] != ctx->plan.ndim)
         return fail(error, COTOCOA_INVALID, "invalid protocol header from source rank %d", source);
     for (int d = 0; d < 3; ++d)
         if (get64(h, 18+d*2) != (uint64_t)ctx->plan.shape[d] ||
@@ -410,16 +455,21 @@ int cotocoa_receive(cotocoa_context *ctx, const char *name,
     if (bad) fail(error, COTOCOA_INVALID, "out-of-order snapshot from source rank %d", source);
     collective_check(ctx, bad, error, CTCA_subcomm);
     cotocoa_message *message = calloc(1, sizeof(*message));
-    if (message) message->data = malloc(ctx->elements*sizeof(double));
+    if (message) message->data = malloc(ctx->elements*itemsize(ctx->plan.dtype));
     bad = !message || !message->data;
     if (bad) fail(error, COTOCOA_MEMORY, "cannot allocate received snapshot");
     collective_check(ctx, bad, error, CTCA_subcomm);
-    if (ctx->rank == 0)
-        CTCAW_readarea_real8(ctx->area, source, (size_t)header[3]*ctx->elements,
-                            ctx->elements, message->data);
-    MPI_Bcast(message->data, (int)ctx->elements, MPI_DOUBLE, 0, CTCA_subcomm);
+    if (ctx->rank == 0) {
+        size_t offset = (size_t)header[3]*ctx->elements;
+        if (ctx->plan.dtype == COTOCOA_FLOAT64) CTCAW_readarea_real8(ctx->area, source, offset, ctx->elements, message->data);
+        else if (ctx->plan.dtype == COTOCOA_FLOAT32) CTCAW_readarea_real4(ctx->area, source, offset, ctx->elements, message->data);
+        else CTCAW_readarea_int(ctx->area, source, offset, ctx->elements, message->data);
+    }
+    MPI_Bcast(message->data, (int)ctx->elements, mpi_type(ctx->plan.dtype), 0, CTCA_subcomm);
     message->context = ctx;
     cotocoa_metadata *m = &message->metadata;
+    m->dtype = ctx->plan.dtype;
+    m->ndim = ctx->plan.ndim;
     m->step = (int64_t)get64(header, 8);
     m->sequence = sequence; m->source_rank = source; m->has_time = header[5];
     uint64_t time_bits = get64(header, 10);
@@ -440,7 +490,8 @@ int cotocoa_message_view(const cotocoa_message *message,
                          cotocoa_array_view *out, cotocoa_error *error)
 {
     if (!message || !out) return fail(error, COTOCOA_INVALID, "message_view requires a message and output");
-    *out = cotocoa_view_f64(message->data, 3, message->metadata.shape, COTOCOA_ORDER_F);
+    *out = make_view(message->data, message->metadata.dtype, message->metadata.ndim,
+                     message->metadata.shape, COTOCOA_ORDER_F);
     return COTOCOA_OK;
 }
 

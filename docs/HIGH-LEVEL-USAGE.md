@@ -1,8 +1,10 @@
 # Fortran・C・Python の名前付き配列連携
 
 高水準 API の最初の実装は、3 言語すべての送信・受信に対応する。
-`float64` の固定 3 次元配列を、一方向の `snapshot/all/shards` として転送する。
+`int32/float32/float64` の固定 1〜3 次元配列を、一方向の `snapshot/all/shards` として転送する。
 型や領域分割の異なる配列の自動変換、双方向連成、Task API は後続の実装となる。
+非連続配列は送信時に packing する。C/Python は正負の byte stride に対応し、
+Fortran の generic send/copy_to は3型×3次元の overload を提供する。
 
 ## ビルドと導入
 
@@ -153,3 +155,9 @@ Slurm profile は `srun --kill-on-bad-exit=1 /bin/sh <dispatch>` で各ケース
 受信側例外のケースは意図した非ゼロ終了と診断を確認して合格とする。
 最小の Fortran→Fortran 例はジョブ `9175533`、`-t 0:05:00`、
 `--rsc p=4:t=1:c=1` で20メッセージを処理し、終了コード 0。
+
+型・次元拡張はビルドジョブ `9175619` で設定テスト28件を通過した。
+`sbatch -p gr20001a tests/kudpc-extended.sbatch` のジョブ `9175623` は、
+`-t 0:15:00`、`--rsc p=5:t=1:c=1` で既存14ケースと追加27ケースを通過した。
+追加ケースは各言語が int32/float32/float64 と1〜3次元の全9組合せを送信し、
+受信言語を交替させ、間引き・逆順スライスと負値の一致を検証する。

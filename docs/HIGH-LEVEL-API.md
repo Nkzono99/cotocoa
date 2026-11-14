@@ -1,7 +1,7 @@
 # CoToCoA 高水準 API 設計案
 
 状態: 初期実装あり。3 言語の送受信、標準 Coupler、check/plan/run は
-固定 3 次元 float64 の snapshot/all/shards から提供する。
+固定1〜3次元の int32/float32/float64 を snapshot/all/shards で提供する。
 実際の利用方法と制限は [HIGH-LEVEL-USAGE.md](HIGH-LEVEL-USAGE.md) を参照。
 以下には追加型、複数接続、Task API など後続実装の設計も含む。
 対象: `Nkzono99/cotocoa` の独自拡張。

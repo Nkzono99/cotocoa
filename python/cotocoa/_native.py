@@ -25,7 +25,8 @@ class Metadata(C.Structure):
                 ("source_rank", C.c_int), ("has_time", C.c_int), ("time", C.c_double),
                 ("shape", C.c_int64 * 3), ("global_shape", C.c_int64 * 3),
                 ("offset", C.c_int64 * 3), ("axes", (C.c_char * 64) * 3),
-                ("units", C.c_char * 64), ("time_unit", C.c_char * 64)]
+                ("units", C.c_char * 64), ("time_unit", C.c_char * 64),
+                ("dtype", C.c_int), ("ndim", C.c_int)]
 
 
 @lru_cache(maxsize=1)

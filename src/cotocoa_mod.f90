@@ -3,6 +3,7 @@ module cotocoa
   implicit none
   private
   public :: ctca_context, ctca_message, ctca_status
+  integer, parameter, public :: COTOCOA_FLOAT64=1, COTOCOA_FLOAT32=2, COTOCOA_INT32=3
 
   type, bind(c) :: c_error
     integer(c_int) :: code
@@ -28,6 +29,7 @@ module cotocoa
     real(c_double) :: time
     integer(c_int64_t) :: shape(3), global_shape(3), offset(3)
     character(c_char) :: axes(64, 3), units(64), time_unit(64)
+    integer(c_int) :: dtype, ndim
   end type
 
   type :: ctca_status
@@ -42,8 +44,12 @@ module cotocoa
     procedure :: open => context_open
     procedure :: close => context_close
     procedure :: comm => context_comm
-    procedure, private :: send_real64_3
-    generic :: send => send_real64_3
+    procedure, private :: send_real64_1, send_real64_2, send_real64_3
+    procedure, private :: send_real32_1, send_real32_2, send_real32_3
+    procedure, private :: send_int32_1, send_int32_2, send_int32_3
+    generic :: send => send_real64_1, send_real64_2, send_real64_3, &
+                      send_real32_1, send_real32_2, send_real32_3, &
+                      send_int32_1, send_int32_2, send_int32_3
     procedure :: receive => context_receive
     procedure :: flush => context_flush
   end type
@@ -53,7 +59,12 @@ module cotocoa
     type(c_ptr) :: handle = c_null_ptr
     type(c_metadata) :: meta
   contains
-    procedure :: copy_to => message_copy_real64_3
+    procedure, private :: copy_real64_1, copy_real64_2, copy_real64_3
+    procedure, private :: copy_real32_1, copy_real32_2, copy_real32_3
+    procedure, private :: copy_int32_1, copy_int32_2, copy_int32_3
+    generic :: copy_to => copy_real64_1, copy_real64_2, copy_real64_3, &
+                         copy_real32_1, copy_real32_2, copy_real32_3, &
+                         copy_int32_1, copy_int32_2, copy_int32_3
     procedure :: complete => message_complete
     procedure :: step => message_step
     procedure :: sequence => message_sequence
@@ -66,6 +77,8 @@ module cotocoa
     procedure :: axes => message_axes
     procedure :: units => message_units
     procedure :: time_unit => message_time_unit
+    procedure :: dtype => message_dtype
+    procedure :: ndim => message_ndim
   end type
 
   interface
@@ -107,6 +120,20 @@ module cotocoa
       type(c_options), intent(in) :: options
       type(c_error), intent(out) :: error
       integer(c_int) :: rc
+    end function
+    function c_make_view_f32(data, ndim, shape, order) bind(c, name='cotocoa_view_f32') result(view)
+      import
+      type(c_ptr), value :: data
+      integer(c_int), value :: ndim, order
+      integer(c_int64_t), intent(in) :: shape(3)
+      type(c_view) :: view
+    end function
+    function c_make_view_i32(data, ndim, shape, order) bind(c, name='cotocoa_view_i32') result(view)
+      import
+      type(c_ptr), value :: data
+      integer(c_int), value :: ndim, order
+      integer(c_int64_t), intent(in) :: shape(3)
+      type(c_view) :: view
     end function
     function c_receive(ctx, name, message, error) bind(c, name='cotocoa_receive') result(rc)
       import
@@ -216,34 +243,7 @@ contains
     comm = c_comm(self%handle)
   end function
 
-  subroutine send_real64_3(self, name, array, step, time, offset, status)
-    class(ctca_context), intent(inout) :: self
-    character(len=*), intent(in) :: name
-    real(c_double), contiguous, target, intent(in) :: array(:, :, :)
-    integer(c_int64_t), intent(in) :: step
-    real(c_double), optional, intent(in) :: time
-    integer(c_int64_t), optional, intent(in) :: offset(3)
-    type(ctca_status), optional, intent(out) :: status
-    type(c_error) :: error
-    type(c_options) :: options
-    type(c_view) :: view
-    type(c_ptr) :: data
-    integer(c_int) :: rc
-    data = c_null_ptr
-    if (size(array) > 0) data = c_loc(array(1, 1, 1))
-    view = c_make_view(data, 3_c_int, shape(array, kind=c_int64_t), 1_c_int)
-    options%step = step
-    options%has_time = 0
-    options%time = 0.0_c_double
-    options%offset = 0_c_int64_t
-    if (present(time)) then
-      options%has_time = 1
-      options%time = time
-    end if
-    if (present(offset)) options%offset = offset
-    rc = c_send(self%handle, trim(name)//c_null_char, view, options, error)
-    call report(rc, error, self%handle, status)
-  end subroutine
+  include 'cotocoa_arrays.inc'
 
   subroutine context_receive(self, name, message, has_message, status)
     class(ctca_context), intent(inout) :: self
@@ -275,21 +275,6 @@ contains
     call report(rc, error, self%handle, status)
   end subroutine
 
-  subroutine message_copy_real64_3(self, array, status)
-    class(ctca_message), intent(in) :: self
-    real(c_double), allocatable, intent(out) :: array(:, :, :)
-    type(ctca_status), optional, intent(out) :: status
-    type(c_error) :: error
-    type(c_view) :: view
-    real(c_double), pointer :: source(:, :, :)
-    integer(c_int) :: rc
-    rc = c_get_view(self%handle, view, error)
-    if (rc == 0) then
-      call c_f_pointer(view%data, source, int(view%shape))
-      array = source
-    end if
-    call report(rc, error, c_null_ptr, status)
-  end subroutine
 
   subroutine message_complete(self, status)
     class(ctca_message), intent(inout) :: self
@@ -324,20 +309,20 @@ contains
 
   function message_offset(self) result(value)
     class(ctca_message), intent(in) :: self
-    integer(c_int64_t) :: value(3)
-    value = self%meta%offset
+    integer(c_int64_t), allocatable :: value(:)
+    value = self%meta%offset(:self%meta%ndim)
   end function
 
   function message_global_shape(self) result(value)
     class(ctca_message), intent(in) :: self
-    integer(c_int64_t) :: value(3)
-    value = self%meta%global_shape
+    integer(c_int64_t), allocatable :: value(:)
+    value = self%meta%global_shape(:self%meta%ndim)
   end function
 
   function message_shape(self) result(value)
     class(ctca_message), intent(in) :: self
-    integer(c_int64_t) :: value(3)
-    value = self%meta%shape
+    integer(c_int64_t), allocatable :: value(:)
+    value = self%meta%shape(:self%meta%ndim)
   end function
 
   function message_has_time(self) result(value)
@@ -365,9 +350,10 @@ contains
 
   function message_axes(self) result(value)
     class(ctca_message), intent(in) :: self
-    character(len=64) :: value(3)
+    character(len=64), allocatable :: value(:)
     integer :: i
-    do i = 1, 3
+    allocate(value(self%meta%ndim))
+    do i = 1, self%meta%ndim
       value(i) = label(self%meta%axes(:,i))
     end do
   end function
@@ -382,5 +368,17 @@ contains
     class(ctca_message), intent(in) :: self
     character(len=64) :: value
     value = label(self%meta%time_unit)
+  end function
+
+  function message_dtype(self) result(value)
+    class(ctca_message), intent(in) :: self
+    integer :: value
+    value = self%meta%dtype
+  end function
+
+  function message_ndim(self) result(value)
+    class(ctca_message), intent(in) :: self
+    integer :: value
+    value = self%meta%ndim
   end function
 end module cotocoa

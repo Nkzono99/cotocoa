@@ -17,6 +17,7 @@ set_target_properties(cotocoa_fortran PROPERTIES
 target_include_directories(cotocoa_fortran PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/modules>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/cotocoa>)
+target_include_directories(cotocoa_fortran PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(cotocoa_fortran PUBLIC cotocoa MPI::MPI_Fortran)
 
 add_executable(cotocoa-coupler app/cotocoa_coupler.c)

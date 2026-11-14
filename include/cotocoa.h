@@ -10,7 +10,8 @@ extern "C" {
 
 enum { COTOCOA_OK = 0, COTOCOA_END = 1,
        COTOCOA_INVALID = -1, COTOCOA_STATE = -2, COTOCOA_MEMORY = -3 };
-enum { COTOCOA_FLOAT64 = 1, COTOCOA_ORDER_C = 0, COTOCOA_ORDER_F = 1 };
+enum { COTOCOA_FLOAT64 = 1, COTOCOA_FLOAT32 = 2, COTOCOA_INT32 = 3,
+       COTOCOA_ORDER_C = 0, COTOCOA_ORDER_F = 1 };
 
 typedef struct cotocoa_context cotocoa_context;
 typedef struct cotocoa_message cotocoa_message;
@@ -39,6 +40,7 @@ typedef struct {
     double time;
     int64_t shape[3], global_shape[3], offset[3];
     char axes[3][64], units[64], time_unit[64];
+    int dtype, ndim;
 } cotocoa_metadata;
 
 /* open/close are collective across the entire coupled job. config is a native
@@ -53,6 +55,10 @@ void cotocoa_abort(cotocoa_context *ctx, const cotocoa_error *error);
 
 cotocoa_array_view cotocoa_view_f64(const double *data, int ndim,
                                    const int64_t shape[3], int order);
+cotocoa_array_view cotocoa_view_f32(const float *data, int ndim,
+                                   const int64_t *shape, int order);
+cotocoa_array_view cotocoa_view_i32(const int32_t *data, int ndim,
+                                   const int64_t *shape, int order);
 cotocoa_send_options cotocoa_send_defaults(void);
 int cotocoa_send(cotocoa_context *ctx, const char *name,
                  const cotocoa_array_view *array,
