@@ -12,10 +12,10 @@ Fortran の generic send/copy_to は3型×3次元の overload を提供する。
 
 ## ビルドと導入
 
-このforkの高水準APIは `main` ブランチにある。既定の `master` とは分けて取得する。
+このforkの既定ブランチは、高水準APIを含む `main`。従来の `master` も保持している。
 
 ```sh
-git clone --branch main https://github.com/Nkzono99/cotocoa.git
+git clone https://github.com/Nkzono99/cotocoa.git
 cd cotocoa
 ```
 

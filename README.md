@@ -25,9 +25,9 @@ Developers of CoToCoA:
 
 ## Fork development
 
-The high-level API is on this fork's `main` branch. The existing default
-`master` branch is retained. Clone with `git clone --branch main
-https://github.com/Nkzono99/cotocoa.git` to use these additions.
+This fork's default branch is `main`, which includes the high-level API.
+The previous `master` branch is retained. The upstream repository's default
+branch and history are unchanged.
 
 This fork's Fortran, C, and Python interfaces and configuration-driven
 coupling are described in [the high-level API design](docs/HIGH-LEVEL-API.md)

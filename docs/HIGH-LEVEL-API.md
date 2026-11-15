@@ -139,6 +139,8 @@ MPI プロセス障害は fail-fast とし、復旧や再配信を行わない�
 
 origin は `https://github.com/Nkzono99/cotocoa.git`。
 GitHub 上で親が `tnanri/cotocoa` の fork であることを作業開始時に確認した。
+fork の既定ブランチは高水準APIを含む `main` とし、従来の `master` も保持する。
+この設定はfork内だけの変更であり、本家の既定ブランチや履歴は変更しない。
 この checkout は `remote.pushDefault=origin`、作業 branch の pushRemote も origin。
 upstream の push URL は `disabled://upstream-read-only` とし、本家への push/PR は行わない。
 これらの Git 設定はローカルであり、別の clone へ自動では引き継がれない。
