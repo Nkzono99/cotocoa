@@ -10,10 +10,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #define HEADER_WORDS 48
 #define MAGIC 0x43544341
+#define TRANSPORT_REVISION UINT64_C(0x2)  /* 2: status table and snapshot areas use MPI_Win_allocate */
 _Static_assert(sizeof(int)==4 && sizeof(float)==4 && sizeof(double)==8,
                "CoToCoA requires 32-bit int/float and 64-bit double");
 
@@ -38,7 +40,7 @@ struct cotocoa_context {
     cotocoa_ticket *tickets;
     MPI_Win dynamic_window;
     attachment *attachments;
-    int world_rank, current_connection, status_failed;
+    int world_rank, current_connection, status_failed, status_fd;
     int64_t current_step;
     uint64_t sent, received, completed, dropped;
     double started, last_status;
@@ -56,41 +58,57 @@ static int context_used;
 static cotocoa_context *guard_context;
 static void retire_completed(cotocoa_context *ctx);
 
-static void json_string(FILE *f,const char *text)
+/* One fixed-size JSON record per rank, rewritten in place: a phase change costs a
+ * single pwrite and is visible at once, so a rank that then stays in user code for
+ * a long time is still reported with its current phase and counters. */
+#define STATUS_BYTES 4096
+static size_t status_put(char *buffer,size_t used,const char *format,...)
 {
-    fputc('"',f);
-    for(const unsigned char *p=(const unsigned char *)text;*p;++p) {
-        if(*p=='"' || *p=='\\') { fputc('\\',f); fputc(*p,f); }
-        else if(*p<32) fprintf(f,"\\u%04x",*p);
-        else fputc(*p,f);
+    va_list args; va_start(args,format);
+    int n=vsnprintf(buffer+used,STATUS_BYTES-used,format,args);
+    va_end(args);
+    return n<0 || (size_t)n>=STATUS_BYTES-used ? STATUS_BYTES-1 : used+(size_t)n;
+}
+static size_t status_string(char *buffer,size_t used,const char *text,size_t reserve)
+{
+    used=status_put(buffer,used,"\"");
+    for(const unsigned char *p=(const unsigned char *)text;*p && used+reserve+8<STATUS_BYTES;++p) {
+        if(*p=='"' || *p=='\\') used=status_put(buffer,used,"\\%c",*p);
+        else if(*p<32) used=status_put(buffer,used,"\\u%04x",*p);
+        else buffer[used++]=(char)*p;
     }
-    fputc('"',f);
+    return status_put(buffer,used,"\"");
 }
 static void record_status(cotocoa_context *ctx,const char *phase,const char *detail,int force)
 {
     if(!ctx) return;
+    int changed=strcmp(ctx->phase,phase)!=0;
     snprintf(ctx->phase,sizeof(ctx->phase),"%s",phase);
     const char *directory=getenv("COTOCOA_RUN_DIR");
     if(!directory || !*directory || ctx->status_failed) return;
     double now=MPI_Wtime();
-    if(!force && now-ctx->last_status<1.0) return;
-    char path[4096],temporary[4096];
-    if(snprintf(path,sizeof(path),"%s/rank-%06d.json",directory,ctx->world_rank)>=(int)sizeof(path) ||
-       snprintf(temporary,sizeof(temporary),"%s.tmp-%ld",path,(long)getpid())>=(int)sizeof(temporary)) {
-        ctx->status_failed=1; return;
+    /* An unchanged phase is a wait loop reporting progress: refresh it once a second. */
+    if(!force && !changed && now-ctx->last_status<1.0) return;
+    if(ctx->status_fd<0) {
+        char path[4096];
+        if(snprintf(path,sizeof(path),"%s/rank-%06d.json",directory,ctx->world_rank)<(int)sizeof(path))
+            ctx->status_fd=open(path,O_WRONLY|O_CREAT|O_TRUNC,0644);
+        if(ctx->status_fd<0) {
+            ctx->status_failed=1; fprintf(stderr,"cotocoa: cannot write rank status under %s\n",directory); return;
+        }
     }
-    FILE *f=fopen(temporary,"w");
-    if(!f) { ctx->status_failed=1; fprintf(stderr,"cotocoa: cannot write rank status: %s\n",path); return; }
+    char record[STATUS_BYTES]; size_t n=0;
     const char *program=ctx->program>=0 ? ctx->plan.programs[ctx->program].name : "__coupler__";
-    fprintf(f,"{\"rank\":%d,\"program\":",ctx->world_rank); json_string(f,program);
-    fputs(",\"phase\":",f); json_string(f,phase);
-    fputs(",\"detail\":",f); json_string(f,detail ? detail : "");
-    fprintf(f,",\"connection_id\":%d,\"step\":%lld,\"sent\":%llu,\"received\":%llu,\"completed\":%llu,\"dropped\":%llu,\"elapsed_seconds\":%.6f}\n",
+    n=status_put(record,n,"{\"rank\":%d,\"program\":",ctx->world_rank); n=status_string(record,n,program,512);
+    n=status_put(record,n,",\"phase\":"); n=status_string(record,n,phase,512);
+    n=status_put(record,n,",\"connection_id\":%d,\"step\":%lld,\"sent\":%llu,\"received\":%llu,\"completed\":%llu,\"dropped\":%llu,\"elapsed_seconds\":%.6f,\"detail\":",
         ctx->current_connection,(long long)ctx->current_step,(unsigned long long)ctx->sent,
         (unsigned long long)ctx->received,(unsigned long long)ctx->completed,(unsigned long long)ctx->dropped,now-ctx->started);
-    int bad=ferror(f); if(fclose(f)) bad=1;
-    if(!bad && !rename(temporary,path)) ctx->last_status=now;
-    else { unlink(temporary); ctx->status_failed=1; }
+    n=status_string(record,n,detail ? detail : "",4);
+    n=status_put(record,n,"}");
+    memset(record+n,' ',STATUS_BYTES-n); record[STATUS_BYTES-1]='\n';
+    if(pwrite(ctx->status_fd,record,STATUS_BYTES,0)==STATUS_BYTES) ctx->last_status=now;
+    else { ctx->status_failed=1; fprintf(stderr,"cotocoa: cannot write rank status under %s\n",directory); }
 }
 static void guard_wait(const char *operation,double started)
 {
@@ -183,19 +201,19 @@ cotocoa_send_options cotocoa_send_defaults(void)
 static void register_route(cotocoa_context *ctx,int index)
 {
     ctco_connection *c=&ctx->plan.connections[index]; route_state *r=&ctx->routes[index];
-    size_t count=c->producer==ctx->program && c->mode==CTCO_SNAPSHOT ? c->elements*(size_t)c->slots : 0;
-    if(c->dtype==COTOCOA_FLOAT64) {
-        if(ctx->role==CTCO_PRODUCER) CTCAR_regarea_real8((double *)r->buffer,count,&r->area);
-        else if(ctx->role==CTCO_COUPLER) CTCAC_regarea_real8(&r->area);
-        else CTCAW_regarea_real8(&r->area);
+    if(ctx->role==CTCO_PRODUCER) {
+        /* The snapshot slots live in memory allocated by MPI, so that a consumer can
+         * read them while this rank is computing outside MPI. */
+        size_t count=c->producer==ctx->program && c->mode==CTCO_SNAPSHOT ? c->elements*(size_t)c->slots : 0;
+        void *base=NULL;
+        ctca_regarea_allocate(count,(int)ctco_itemsize(c->dtype),c->dtype==COTOCOA_INT32,&base,&r->area);
+        if(count) r->buffer=base;
+    } else if(c->dtype==COTOCOA_FLOAT64) {
+        if(ctx->role==CTCO_COUPLER) CTCAC_regarea_real8(&r->area); else CTCAW_regarea_real8(&r->area);
     } else if(c->dtype==COTOCOA_FLOAT32) {
-        if(ctx->role==CTCO_PRODUCER) CTCAR_regarea_real4((float *)r->buffer,count,&r->area);
-        else if(ctx->role==CTCO_COUPLER) CTCAC_regarea_real4(&r->area);
-        else CTCAW_regarea_real4(&r->area);
+        if(ctx->role==CTCO_COUPLER) CTCAC_regarea_real4(&r->area); else CTCAW_regarea_real4(&r->area);
     } else {
-        if(ctx->role==CTCO_PRODUCER) CTCAR_regarea_int((int *)r->buffer,count,&r->area);
-        else if(ctx->role==CTCO_COUPLER) CTCAC_regarea_int(&r->area);
-        else CTCAW_regarea_int(&r->area);
+        if(ctx->role==CTCO_COUPLER) CTCAC_regarea_int(&r->area); else CTCAW_regarea_int(&r->area);
     }
 }
 int cotocoa_open(const char *name,const char *config,cotocoa_context **out,cotocoa_error *error)
@@ -210,16 +228,20 @@ int cotocoa_open(const char *name,const char *config,cotocoa_context **out,cotoc
     MPI_Comm_rank(MPI_COMM_WORLD,&world_rank); MPI_Comm_size(MPI_COMM_WORLD,&world_size);
     cotocoa_context *ctx=calloc(1,sizeof(*ctx));
     if(!ctx) fail(error,COTOCOA_MEMORY,"cannot allocate Context");
+    else { ctx->status_fd=-1; ctx->program=-1; }
     collective_check(ctx,!ctx,error,MPI_COMM_WORLD);
-    ctx->program=-1; ctx->owns_mpi=!initialized; ctx->dynamic_window=MPI_WIN_NULL;
+    ctx->program=-1; ctx->owns_mpi=!initialized; ctx->dynamic_window=MPI_WIN_NULL; ctx->status_fd=-1;
     ctx->world_rank=world_rank; ctx->started=MPI_Wtime(); ctx->current_connection=-1;
     const char *path=getenv("COTOCOA_MANIFEST"); if(!path || !*path) path=config;
     int bad=ctco_plan_read(path,&ctx->plan,error)!=COTOCOA_OK;
     collective_check(ctx,bad,error,MPI_COMM_WORLD);
     ctco_plan *p=&ctx->plan;
-    uint64_t low,high;
-    MPI_Allreduce(&p->file_hash,&low,1,MPI_UINT64_T,MPI_MIN,MPI_COMM_WORLD);
-    MPI_Allreduce(&p->file_hash,&high,1,MPI_UINT64_T,MPI_MAX,MPI_COMM_WORLD);
+    /* Ranks must agree on the manifest and on how this library creates its MPI
+     * windows: mixing a program linked with an older library into the job would
+     * otherwise fail inside collective window creation instead of here. */
+    uint64_t identity=p->file_hash^TRANSPORT_REVISION,low,high;
+    MPI_Allreduce(&identity,&low,1,MPI_UINT64_T,MPI_MIN,MPI_COMM_WORLD);
+    MPI_Allreduce(&identity,&high,1,MPI_UINT64_T,MPI_MAX,MPI_COMM_WORLD);
     const char *expected_name="__coupler__"; ctx->role=CTCO_COUPLER;
     for(int i=0;i<p->program_count;++i) {
         ctco_program *a=&p->programs[i];
@@ -228,7 +250,7 @@ int cotocoa_open(const char *name,const char *config,cotocoa_context **out,cotoc
         }
     }
     bad=low!=high || world_size!=p->world_size || strcmp(name,expected_name);
-    if(bad) fail(error,COTOCOA_INVALID,"startup mismatch: program=%s expected=%s ranks=%d expected_ranks=%d or manifest differs",
+    if(bad) fail(error,COTOCOA_INVALID,"startup mismatch: program=%s expected=%s ranks=%d expected_ranks=%d or manifest/library version differs",
                  name,expected_name,world_size,p->world_size);
     collective_check(ctx,bad,error,MPI_COMM_WORLD);
     uint32_t endian=1;
@@ -246,9 +268,8 @@ int cotocoa_open(const char *name,const char *config,cotocoa_context **out,cotoc
         ctco_connection *c=&p->connections[i]; route_state *r=&ctx->routes[i];
         if(ctx->role==CTCO_PRODUCER && c->producer==ctx->program) {
             r->handles=calloc((size_t)c->slots,sizeof(int64_t));
-            if(c->mode==CTCO_SNAPSHOT) r->buffer=calloc((size_t)c->slots,c->bytes);
-            else r->loans=calloc((size_t)c->slots,sizeof(attachment *));
-            bad=!r->handles || (c->mode==CTCO_SNAPSHOT ? !r->buffer : !r->loans);
+            if(c->mode==CTCO_BORROW) r->loans=calloc((size_t)c->slots,sizeof(attachment *));
+            bad=!r->handles || (c->mode==CTCO_BORROW && !r->loans);
         } else if(ctx->role==CTCO_CONSUMER && c->consumer==ctx->program) {
             r->received_sequences=calloc((size_t)p->programs[c->producer].ranks,sizeof(int64_t));
             bad=!r->received_sequences;
@@ -257,6 +278,7 @@ int cotocoa_open(const char *name,const char *config,cotocoa_context **out,cotoc
         collective_check(ctx,bad,error,MPI_COMM_WORLD);
     }
     context_used=1;
+    ctca_set_window_allocation(1);
     if(ctx->role==CTCO_PRODUCER) CTCAR_init_detail(p->connection_count,p->max_requests,HEADER_WORDS);
     else if(ctx->role==CTCO_COUPLER) CTCAC_init_detail(p->connection_count,p->queue_capacity,HEADER_WORDS,1,1);
     else CTCAW_init_detail(ctx->program+1,p->programs[ctx->program].group_size,p->connection_count,HEADER_WORDS);
@@ -688,11 +710,13 @@ int cotocoa_close(cotocoa_context *ctx,cotocoa_error *e)
         MPI_Win_free(&ctx->dynamic_window);
     }
     record_status(ctx,"closed",NULL,1);
+    if(ctx->status_fd>=0) close(ctx->status_fd);
     ctca_set_wait_guard(NULL); guard_context=NULL;
     cotocoa_ticket *t=ctx->tickets;
     while(t) { cotocoa_ticket *next=t->next; t->completed=1; t->context=NULL; t->next=NULL; t=next; }
     for(int i=0;i<ctx->plan.connection_count;++i) {
-        free(ctx->routes[i].buffer); free(ctx->routes[i].handles); free(ctx->routes[i].received_sequences);
+        /* The snapshot buffer belongs to its MPI window, released by finalize. */
+        free(ctx->routes[i].handles); free(ctx->routes[i].received_sequences);
         free(ctx->routes[i].loans);
     }
     int owns=ctx->owns_mpi; free(ctx->routes); free(ctx); if(owns) MPI_Finalize(); return COTOCOA_OK;

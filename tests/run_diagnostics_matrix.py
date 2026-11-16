@@ -89,9 +89,26 @@ for source,target in (('c','fortran'),('fortran','python'),('python','c')):
 path,value=config('watchdog',{name:['/bin/sleep','30'] for name in ('producer','consumer')})
 value['runtime']['timeout_seconds']=1.5
 path.write_text(yaml.safe_dump(value)); directory=output/'watchdog-run'
-execute('watchdog',[sys.executable,'-m','cotocoa','run',str(path),'--launcher','slurm','--run-dir',str(directory)],expected='exceeded timeout_seconds')
+text=execute('watchdog',[sys.executable,'-m','cotocoa','run',str(path),'--launcher','slurm','--run-dir',str(directory)],expected='exceeded timeout_seconds')
+assert 'rank states when the limit expired' in text and 'ranks without a status record: [0, 1, 2, 3, 4]' in text,text
 state=json.loads((directory/'run.json').read_text())
 assert state['state']=='timeout' and state['elapsed_seconds']<15
+
+# The watchdog reports what each rank was waiting for before it stops the job.
+path,value=config('watchdog-states')
+for name in value['programs']:
+    value['programs'][name]['command']=[sys.executable,str(root/'tests/stalled.py'),name,str(path)]
+value['runtime']['timeout_seconds']=15
+path.write_text(yaml.safe_dump(value)); directory=output/'watchdog-states-run'
+text=execute('watchdog-states',[sys.executable,'-m','cotocoa','run',str(path),'--launcher','slurm','--run-dir',str(directory)],
+             dict(env,COTOCOA_TEST_STALL='60'),expected='exceeded timeout_seconds')
+assert 'producer ticket-completion step=99 sent=1' in text and 'consumer open' in text,text
+
+# Snapshots are read while the producer computes outside MPI; status records follow every phase change.
+path,value=config('progress')
+for name in value['programs']:
+    value['programs'][name]['command']=[sys.executable,str(root/'tests/progress.py'),name,str(path)]
+launch('progress-outside-mpi',path,value)
 
 # Direct native launch has no Python watchdog: the progress guard must abort.
 path,value=config('native-timeout')

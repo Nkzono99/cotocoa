@@ -1,6 +1,7 @@
 #ifndef COTOCOA_H
 #define COTOCOA_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <mpi.h>
 
@@ -61,8 +62,9 @@ MPI_Comm cotocoa_comm(const cotocoa_context *ctx);
 MPI_Fint cotocoa_comm_f(const cotocoa_context *ctx);
 void cotocoa_abort(cotocoa_context *ctx, const cotocoa_error *error);
 
+/* shape holds ndim entries, in the connection's axis order. */
 cotocoa_array_view cotocoa_view_f64(const double *data, int ndim,
-                                   const int64_t shape[3], int order);
+                                   const int64_t *shape, int order);
 cotocoa_array_view cotocoa_view_f32(const float *data, int ndim,
                                    const int64_t *shape, int order);
 cotocoa_array_view cotocoa_view_i32(const int32_t *data, int ndim,

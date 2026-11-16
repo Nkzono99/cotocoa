@@ -69,6 +69,30 @@ def _terminate(process):
         process.wait()
 
 
+def _rank_records(directory):
+    """Each rank rewrites its record in place; retry a read that raced with a write."""
+    records=[]
+    for path in sorted(directory.glob('rank-*.json')):
+        for attempt in range(5):
+            try:
+                records.append(json.loads(path.read_text()))
+                break
+            except ValueError:
+                time.sleep(0.05)
+    return records
+
+
+def _rank_lines(records,ranks):
+    lines=[]
+    for rank in records:
+        lines.append(f"rank={rank['rank']} {rank['program']} {rank['phase']} step={rank['step']} "
+                     f"sent={rank['sent']} received={rank['received']} completed={rank['completed']} dropped={rank['dropped']}")
+        if rank['detail']: lines.append(f"  {rank['detail']}")
+    missing=sorted(set(range(ranks))-{r['rank'] for r in records})
+    if missing: lines.append(f"ranks without a status record: {missing}")
+    return lines,missing
+
+
 def _status(directory,as_json):
     directory=Path(directory).resolve()
     if not (directory/'run.json').is_file():
@@ -77,8 +101,8 @@ def _status(directory,as_json):
         directory=max(candidates,key=lambda p:p.stat().st_mtime_ns).parent
     record=json.loads((directory/'run.json').read_text())
     record['directory']=str(directory)
-    record['rank_status']=[json.loads(p.read_text()) for p in sorted(directory.glob('rank-*.json'))]
-    record['missing_ranks']=sorted(set(range(record['ranks']))-{r['rank'] for r in record['rank_status']})
+    record['rank_status']=_rank_records(directory)
+    lines,record['missing_ranks']=_rank_lines(record['rank_status'],record['ranks'])
     if record['state'] in ('running','probing') and record['hostname']==socket.gethostname():
         try: os.kill(record['pid'],0)
         except ProcessLookupError: record['state']='controller-lost'
@@ -87,11 +111,7 @@ def _status(directory,as_json):
         print(json.dumps(record,indent=2))
     else:
         print(f"{record['state']}: {directory}")
-        for rank in record['rank_status']:
-            print(f"rank={rank['rank']} {rank['program']} {rank['phase']} step={rank['step']} "
-                  f"sent={rank['sent']} received={rank['received']} completed={rank['completed']} dropped={rank['dropped']}")
-            if rank['detail']: print(f"  {rank['detail']}")
-        if record['missing_ranks']: print(f"ranks without a status record: {record['missing_ranks']}")
+        for line in lines: print(line)
     return 0
 
 
@@ -137,7 +157,11 @@ def _run(plan,args):
         return rc
     except subprocess.TimeoutExpired:
         record['state']='timeout'
+        # What every rank was doing when the limit expired, before the ranks are killed.
+        lines,_=_rank_lines(_rank_records(directory),plan.ranks)
         _terminate(process)
+        print(f'cotocoa: run exceeded timeout_seconds={timeout}; rank states when the limit expired:',file=sys.stderr)
+        for line in lines: print(f'cotocoa:   {line}',file=sys.stderr)
         raise ConfigError(f'run exceeded timeout_seconds={timeout}; inspect cotocoa status {directory}')
     except BaseException as exc:
         record['state']='interrupted' if isinstance(exc,KeyboardInterrupt) else 'failed'

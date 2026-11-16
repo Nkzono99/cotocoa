@@ -1,3 +1,4 @@
+import os
 import sys
 import time
 import numpy as np
@@ -9,4 +10,4 @@ with Context(name,config=config) as ctx:
         ctx.send('field',np.zeros(3),step=99)
         ctx.flush()
     else:
-        time.sleep(10)
+        time.sleep(float(os.environ.get('COTOCOA_TEST_STALL','10')))

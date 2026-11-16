@@ -11,6 +11,8 @@
 MPI_Comm CTCA_subcomm;
 static void (*adapter_wait_guard)(const char *, double);
 void ctca_set_wait_guard(void (*guard)(const char *, double)) { adapter_wait_guard=guard; }
+static int adapter_allocate_windows;
+void ctca_set_window_allocation(int enabled) { adapter_allocate_windows=enabled; }
 static void wait_tick(const char *operation,double started)
 { if(adapter_wait_guard) adapter_wait_guard(operation,started); }
 
@@ -315,11 +317,15 @@ int CTCAR_init_detail(int numareas, int numreqs, int intparams)
 
     //  setup request status table
     size_byte = sizeof(int64_t) * req_maxreqs;
-    MPI_Alloc_mem(size_byte, MPI_INFO_NULL, &req_reqstat_table);
+    if (adapter_allocate_windows)
+        MPI_Win_allocate(size_byte, sizeof(int64_t), MPI_INFO_NULL, MPI_COMM_WORLD, &req_reqstat_table, &win_reqstat);
+    else
+        MPI_Alloc_mem(size_byte, MPI_INFO_NULL, &req_reqstat_table);
     for (i = 0; i < req_maxreqs; i++)
         req_reqstat_table[i] = REQSTAT_IDLE;
 
-    MPI_Win_create((void *)req_reqstat_table, size_byte, sizeof(int64_t), MPI_INFO_NULL, MPI_COMM_WORLD, &win_reqstat);
+    if (!adapter_allocate_windows)
+        MPI_Win_create((void *)req_reqstat_table, size_byte, sizeof(int64_t), MPI_INFO_NULL, MPI_COMM_WORLD, &win_reqstat);
     MPI_Win_lock_all(MPI_MODE_NOCHECK, win_reqstat);
 
     //  setup a buffer for outgoing request
@@ -381,7 +387,13 @@ int CTCAR_init()
     return CTCAR_init_detail(DEF_MAXNUMAREAS, DEF_REQ_NUMREQS, DEF_MAXINTPARAMS);
 }
 
+static int req_regarea_impl(void *base, void **allocated, size_t size, MPI_Aint size_byte, int unit, int type, int *areaid);
 int req_regarea(void *base, size_t size, MPI_Aint size_byte, int unit, int type, int *areaid)
+{
+    return req_regarea_impl(base, NULL, size, size_byte, unit, type, areaid);
+}
+
+static int req_regarea_impl(void *base, void **allocated, size_t size, MPI_Aint size_byte, int unit, int type, int *areaid)
 {
     char *areainfo_item;
     double t0;
@@ -392,7 +404,10 @@ int req_regarea(void *base, size_t size, MPI_Aint size_byte, int unit, int type,
     areainfo_item = (char *)areainfo_table + areaidctr * areainfo_itemsize;
 
     //  Create a window for this area
-    MPI_Win_create(base, size_byte, unit, MPI_INFO_NULL, MPI_COMM_WORLD, &(areawin_table[areaidctr]));
+    if (allocated)
+        MPI_Win_allocate(size_byte, unit, MPI_INFO_NULL, MPI_COMM_WORLD, allocated, &(areawin_table[areaidctr]));
+    else
+        MPI_Win_create(base, size_byte, unit, MPI_INFO_NULL, MPI_COMM_WORLD, &(areawin_table[areaidctr]));
     MPI_Win_lock_all(MPI_MODE_NOCHECK, areawin_table[areaidctr]);
 
     //  Set and broadcast areainfo_table
@@ -410,6 +425,16 @@ int req_regarea(void *base, size_t size, MPI_Aint size_byte, int unit, int type,
         prof_req_times[PROF_REQ_REGAREA] += MPI_Wtime() - t0;
 
     return 0;
+}
+
+int ctca_regarea_allocate(size_t size, int unit, int integer_type, void **base, int *areaid)
+{
+    int type = unit == 8 ? AREA_REAL8 : (integer_type ? AREA_INT : AREA_REAL4);
+    if (myrole != ROLE_REQ || !adapter_allocate_windows || (unit != 4 && unit != 8)) {
+        fprintf(stderr, "%d : ctca_regarea_allocate() : ERROR : wrong role, mode or unit\n", world_myrank);
+        MPI_Abort(MPI_COMM_WORLD, 0);
+    }
+    return req_regarea_impl(NULL, base, size, (MPI_Aint)size * unit, unit, type, areaid);
 }
 
 int CTCAR_regarea_int(int *base, size_t size, int *areaid)
@@ -879,7 +904,8 @@ int CTCAR_finalize()
     }
 
     free_common_tables();
-    MPI_Free_mem((void *)req_reqstat_table);
+    if (!adapter_allocate_windows)   /* MPI_Win_free released an allocated table */
+        MPI_Free_mem((void *)req_reqstat_table);
     free(req_reqbuf);
     free(req_wrkmaster_table);
 
@@ -1091,7 +1117,11 @@ int CTCAC_init_detail(int numareas, int numreqs, int intparams, size_t bufslotsz
 
     //  Attend win_create for request status table on requesters
     size_byte = 0;
-    MPI_Win_create(0, size_byte, sizeof(int64_t), MPI_INFO_NULL, MPI_COMM_WORLD, &win_reqstat);
+    if (adapter_allocate_windows) {
+        void *unused;
+        MPI_Win_allocate(size_byte, sizeof(int64_t), MPI_INFO_NULL, MPI_COMM_WORLD, &unused, &win_reqstat);
+    } else
+        MPI_Win_create(0, size_byte, sizeof(int64_t), MPI_INFO_NULL, MPI_COMM_WORLD, &win_reqstat);
     MPI_Win_lock_all(MPI_MODE_NOCHECK, win_reqstat);
 
     //  setup a buffer for incomming requests
@@ -1310,7 +1340,11 @@ int cpl_regarea(int *areaid)
 
     //  Create a window for this area
     size_byte = 0;
-    MPI_Win_create(&val, size_byte, 4, MPI_INFO_NULL, MPI_COMM_WORLD, &(areawin_table[areaidctr]));
+    if (adapter_allocate_windows) {
+        void *unused;
+        MPI_Win_allocate(size_byte, 4, MPI_INFO_NULL, MPI_COMM_WORLD, &unused, &(areawin_table[areaidctr]));
+    } else
+        MPI_Win_create(&val, size_byte, 4, MPI_INFO_NULL, MPI_COMM_WORLD, &(areawin_table[areaidctr]));
     MPI_Win_lock_all(MPI_MODE_NOCHECK, areawin_table[areaidctr]);
 
     //  Get areainfo
@@ -2076,7 +2110,11 @@ int CTCAW_init_detail(int progid, int procspercomm, int numareas, int intparams)
 
     //  attend window creation for request status
     size_byte = 0;
-    MPI_Win_create(NULL, size_byte, sizeof(int64_t), MPI_INFO_NULL, MPI_COMM_WORLD, &win_reqstat);
+    if (adapter_allocate_windows) {
+        void *unused;
+        MPI_Win_allocate(size_byte, sizeof(int64_t), MPI_INFO_NULL, MPI_COMM_WORLD, &unused, &win_reqstat);
+    } else
+        MPI_Win_create(NULL, size_byte, sizeof(int64_t), MPI_INFO_NULL, MPI_COMM_WORLD, &win_reqstat);
     MPI_Win_lock_all(MPI_MODE_NOCHECK, win_reqstat);
 
     //  attend gathering information of workers
@@ -2138,7 +2176,11 @@ int wrk_regarea(int *areaid)
 
     //  Create a window for this area
     size_byte = 0;
-    MPI_Win_create(&val, size_byte, 4, MPI_INFO_NULL, MPI_COMM_WORLD, &(areawin_table[areaidctr]));
+    if (adapter_allocate_windows) {
+        void *unused;
+        MPI_Win_allocate(size_byte, 4, MPI_INFO_NULL, MPI_COMM_WORLD, &unused, &(areawin_table[areaidctr]));
+    } else
+        MPI_Win_create(&val, size_byte, 4, MPI_INFO_NULL, MPI_COMM_WORLD, &(areawin_table[areaidctr]));
     MPI_Win_lock_all(MPI_MODE_NOCHECK, areawin_table[areaidctr]);
 
     //  Get areainfo
