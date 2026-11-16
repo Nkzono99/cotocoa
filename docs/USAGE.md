@@ -1,59 +1,88 @@
-Usage of CoToCoA
-=====
+# 従来APIの利用ガイド
 
-1. Modify existing programs
------
+[ドキュメント一覧](README.md) · [API一覧](API.md)
 
-CoToCoA assumes the users to couple two (or more) existing MPI programs.
+このページは `CTCAR_*`・`CTCAC_*`・`CTCAW_*` を使うプログラム向けです。
+名前付きポートとYAMLで連携する場合は、[最初の連携](HIGH-LEVEL-USAGE.md)を参照してください。
 
-CoToCoA requires at least the following modifications to those programs:
-- Replace MPI_Init and MPI_Finalize with the routines of initialization and finalization of CoToCoA.
-- Change MPI_COMM_WORLD to CTCA_Subcomm.
+## 役割を決める
 
-According to the type of the program, some additional changes are needed:
-- Requester
-    - Add routines to send requests.
-    - Attache data to each request, or add routines to expose memory areas to be read/written by the coupler or the workers.
-- Worker
-    - Make a main loop that repeats the following operations: 
-        - Deque request from the queue.
-        - If the requester has quitted CoToCoA, quit from the main loop.
-        - Initialize the work.
-        - Read data from the requester (if necessary).
-        - Compute with the request.
-        - Write-back data to the requester (if necessary).
-        - Notify completion of the request.
+従来APIでは、次の3種類のプログラムを利用者が用意します。
 
-2. Prepare a coupler program
------
+| 役割 | すること | API |
+| --- | --- | --- |
+| Requester | 計算依頼を送る。必要に応じて共有領域を公開する | [CTCAR_*](API-requester.md) |
+| Coupler | 依頼を受け取り、対象のWorkerプログラムへ配送する | [CTCAC_*](API-coupler.md) |
+| Worker | 依頼を処理し、完了を通知する | [CTCAW_*](API-worker.md) |
 
-Usually, the coupler program is newly created or copied from the previous coupled computation.
+Workerの `progid` は、Couplerが宛先を選ぶためのIDです。
+`procspercomm` は1つのWorkerグループを構成するrank数です。
+同じWorkerプログラムを複数グループ起動して、依頼を分担できます。
 
-The simplest design is as follows:
-- Initialize CoToCoA
-- Main loop:
-    - Accept request from the requester
-    - If the requester has quitted CoToCoA, quit from the main loop.
-    - Enqueue the request to the queue of the target worker.
-- Finalize CoToCoA
- 
-3. Compile all programs
------
+従来APIでは独自のCouplerを使います。
+名前付きAPI用に付属する `cotocoa-coupler` とは、依頼の形式と配送処理が異なります。
 
-Add the following flags to compile and link CoToCoA library:
-- C
-    - ``-I${cotocoa_dir}/include``
-    - ``-L${cotocoa_dir}/lib -lctca``
-- Fortran
-    - ``-I${cotocoa_dir}/include``
-    - ``-L${cotocoa_dir}/lib -lctca -lctca_f -lctca_mod``
+## 既存のMPIプログラムへ組み込む
 
-4. Run the programs
------
+Cでは `ctca.h`、Fortranでは `use ctca` を使います。
 
-Use MPMD style of mpirun to start programs of the requester, the coupler and the workers.
+1. MPIの初期化を、その役割の `CTCAR_init`・`CTCAC_init`・`CTCAW_init` に置き換える。
+2. 計算に使う `MPI_COMM_WORLD` を `CTCA_subcomm` に置き換える。
+3. 依頼の送信、受信、配送、完了通知を追加する。
+4. 最後に役割に対応した `*_finalize` を呼ぶ。
 
-    Example (8 procs for the requester, 1 proc for the coupler and 4 procs for each of the three workers):
+Requesterは `sendreq` 系の関数で整数パラメータを送ります。
+必要なら整数・単精度・倍精度の配列を添付できます。
+`_hdl` 付きの関数はハンドルを返すので、`CTCAR_wait`・`CTCAR_test` で完了を確認できます。
 
-    `mpirun  -n 8 ./sample_requester : -n 1 ./sample_coupler : -n 4 ./sample_worker0 : -n 4 ./sample_worker1 : -n 8 ./sample_worker2`
+Couplerは `pollreq` で依頼を受け取り、終了を確認してから `enqreq` でWorkerへ渡します。
+Workerは `pollreq`、終了確認、処理、`CTCAW_complete` を繰り返します。
+いずれも終了通知を受け取るまでループを続けます。
 
+共有領域を使う場合は、各役割で対応する `regarea` を呼び、
+取得したarea IDを `readarea`・`writearea` に渡します。
+引数や集団操作の条件は、各関数のリファレンスを確認してください。
+
+## ビルドする
+
+[インストール](INSTALL.md)のCMakeビルドは、従来APIも含んでいます。
+利用側は名前付きAPIと同じCMakeターゲットへリンクできます。
+
+| 言語 | インクルード・モジュール | CMakeターゲット |
+| --- | --- | --- |
+| C | `ctca.h` | `cotocoa::cotocoa` |
+| Fortran | `ctca` | `cotocoa::cotocoa_fortran` |
+| Python Worker | `ctca4py.CTCAWorker` | [別パッケージをインストール](USAGE_from_Python.md) |
+
+fpmを使うFortranプロジェクトでは、依存関係として次を指定できます。
+ビルドにはMPIコンパイラを使ってください。
+
+```toml
+[dependencies]
+ctca = { git = "https://github.com/Nkzono99/cotocoa.git", branch = "main" }
+```
+
+## MPIのMPMD形式で起動する
+
+Requester、Coupler、Workerを1つのMPIジョブとして起動します。
+以下は、Requester 2rank、Coupler 1rank、Worker 4rankの構成例です。
+実行ファイルは自分でビルドしたものに置き換えます。
+
+```sh
+mpiexec -n 2 ./requester : -n 1 ./coupler : -n 4 ./worker
+```
+
+Workerが `procspercomm=2` で初期化すれば、2rankのグループが2つできます。
+スパコンでは資源を確保した上で、その施設が提供するMPMD起動方法を使ってください。
+名前付きAPIの `cotocoa run` 用YAMLは、この従来APIの起動には使いません。
+
+## ソース例
+
+| 内容 | Requester | Coupler | Worker |
+| --- | --- | --- | --- |
+| Cの配列添付 | [sample1_requester.c](../test/sample1_requester.c) | [sample1_coupler.c](../test/sample1_coupler.c) | [sample1_worker1.c](../test/sample1_worker1.c) |
+| Fortranの配列添付 | [sample2_requester.f90](../test/sample2_requester.f90) | [sample2_coupler.f90](../test/sample2_coupler.f90) | [sample2_worker1.f90](../test/sample2_worker1.f90) |
+| CからPythonへの依頼 | [sample4_requester.c](../test/sample4_requester.c) | [sample4_coupler.c](../test/sample4_coupler.c) | [sample4_worker.py](../test/sample4_worker.py) |
+
+サンプルごとに必要なWorkerのIDやグループ数が異なります。
+起動前に、Requesterの宛先選択とWorkerの初期化引数を確認してください。

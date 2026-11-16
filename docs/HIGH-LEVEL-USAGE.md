@@ -1,159 +1,110 @@
-# Fortran・C・Python の名前付き配列連携
+# 最初の連携を動かす
 
-高水準 API 0.3 は、3言語すべての送信・受信に対応する。
-`int32/float32/float64` の固定1〜3次元配列を名前付き port で転送する。
-snapshot/borrow、stream の all/latest、Task と複数 worker group を提供する。
-複数接続と Task API は [TASKS-AND-PORTS.md](TASKS-AND-PORTS.md) を参照する。
-型や領域分割の異なる配列の自動変換、双方向・循環連成は対象に含めない。
-非連続配列は送信時に packing する。C/Python は正負の byte stride に対応し、
-Fortran の generic send/copy_to は3型×3次元の overload を提供する。
-寿命は [配送と保持](DELIVERY-AND-SHARING.md)、全体の配列は [Assembler](ASSEMBLY.md)、
-起動確認と状態照会は [診断](DIAGNOSTICS.md) を参照する。
+[インストール](INSTALL.md) → 最初の連携 → [連携のしくみ](OVERVIEW.md)
 
-## ビルドと導入
+付属のサンプルで、2つの送信プロセスから1つの受信プロセスへ電位配列を送ります。
+初期設定はFortran同士です。プログラムを差し替えるだけで、CやPythonとの組み合わせも試せます。
 
-このforkの既定ブランチは、高水準APIを含む `main`。従来の `master` も保持している。
+**準備：** [インストール](INSTALL.md)を終え、リポジトリ直下に `build/` と `.venv/` がある状態にしてください。
+以下のコマンドはすべてリポジトリ直下から実行します。
 
-```sh
-git clone https://github.com/Nkzono99/cotocoa.git
-cd cotocoa
+## 1. 設定を見る
+
+[examples/snapshot/cotocoa.yaml](../examples/snapshot/cotocoa.yaml)の中心となる設定は次のとおりです。
+
+```yaml
+schema: 1
+programs:
+  producer:
+    command: ["../../build/snapshot_fortran", "producer"]
+    ranks: 2
+  consumer:
+    command: ["../../build/snapshot_fortran", "consumer"]
+    ranks: 1
+connections:
+  - name: potential
+    from: producer.potential
+    to: consumer.potential
+    dtype: float64
+    shape: [3, 5, 7]
+    global_shape: [6, 5, 7]
+    axes: [x, y, z]
+    units: V
+    time_unit: s
 ```
 
-C と Fortran の MPI 3 以降のコンパイラ、CMake 3.16 以降、Python 3.10 以降が必要。
-各 binding とバックエンドは同じ MPI 実装を使う。
-次は Intel MPI のビルド例。Open MPI 等では対応する `mpicc/mpifort` を指定する。
-KUDPC のビルド・テストは、利用可能なキューの計算ノード内で実行する。
+`producer.potential` は「producerというプログラムのpotentialという送信口」を表します。
+`shape` は1プロセスが送る配列、`global_shape` は全領域の大きさです。
+この例では、各producerがx方向に半分ずつ担当します。
 
-```sh
-cmake -S . -B build \
-  -DCMAKE_C_COMPILER=mpiicc -DCMAKE_Fortran_COMPILER=mpiifort
-cmake --build build -j 2
-python -m venv .venv
-.venv/bin/pip install -e .
-cmake --install build --prefix /your/install/prefix
-```
+設定には利用者のプログラムだけを書きます。CoToCoAが配送用のCouplerを1プロセス追加するため、
+必要なMPIプロセス数は **2 + 1 + 1 = 4** です。
 
-Python package のインストールと native library のビルドは別の操作。
-`pip install` だけで native library がビルドされるとは扱わない。
-開発 checkout では `build/libcotocoa.so` を探索する。
-インストールしたライブラリを使う場合は `COTOCOA_LIBRARY` に共有ライブラリの
-パスを指定するか、システムの共有ライブラリ探索先へ配置する。
-native installのbinをPATHに加えるか、run/probeの `--coupler/--probe` に実行ファイルを指定する。
-ライブラリの導入先はCMakeの表示するlibまたはlib64へ合わせる。
-
-C 利用者は `cotocoa.h` と `libcotocoa`、Fortran 利用者は生成された module と
-`libcotocoa_fortran`、`libcotocoa` をリンクする。リポジトリ内の CMake target
-`cotocoa` と `cotocoa_fortran` が include とリンク情報を持つ。
-インストール後は `find_package(cotocoa 0.3 REQUIRED)` と
-`cotocoa::cotocoa`、Fortran は `find_package(cotocoa 0.3 REQUIRED COMPONENTS Fortran)` と
-`cotocoa::cotocoa_fortran` を使う。Fortran module はビルド時と互換なコンパイラが必要。
-`-DCOTOCOA_ENABLE_FORTRAN=OFF` なら Fortran コンパイラなしで C 層、Coupler、probe をビルドできる。
-
-## 最小例を起動する
-
-[examples/snapshot](../examples/snapshot) に各言語の送受信プログラムがある。
-初期設定は Fortran→Fortran、producer 2 + Coupler 1 + consumer 1 の 4 rank。
+## 2. 設定を確認する
 
 ```sh
 .venv/bin/cotocoa check examples/snapshot/cotocoa.yaml
-.venv/bin/cotocoa plan examples/snapshot/cotocoa.yaml \
-  --output build/snapshot.manifest
+.venv/bin/cotocoa plan examples/snapshot/cotocoa.yaml
 ```
 
-check と plan は MPI を初期化せず、設定で指定されたプログラムも起動しない。
-plan の表示には rank 数、送信枠の保持量、受信バッファ量を含む。
-MPI 自身のメモリや利用者が保持するコピーは別途必要となる。
+`check` は設定と実行ファイルの有無を調べます。
+`plan` はプロセス配置やバッファの見積もりを表示します。
+どちらもMPIジョブを起動しません。
 
-通常の MPI 環境で、計算資源が使用できる場所から次のように起動する。
+## 3. 実行する
+
+MPIプログラムを実行できる環境で、次を実行します。
 
 ```sh
 .venv/bin/cotocoa run examples/snapshot/cotocoa.yaml --launcher mpiexec
 ```
 
-既に確保した Slurm allocation では、controller を 1 回だけ実行する。
-設定の総 rank 数に対応する資源を確保した batch script 内で次を実行する。
-controller を `srun` で rank 数だけ複製しない。
-[examples/snapshot/kudpc.sbatch](../examples/snapshot/kudpc.sbatch) はこの例の
-4 rank 用の script。リポジトリ直下から利用可能なキューを指定して submit する。
+Slurmを使う場合は、**4タスク以上の資源を確保したジョブの中で**次を1回実行します。
 
 ```sh
 .venv/bin/cotocoa run examples/snapshot/cotocoa.yaml --launcher slurm
 ```
 
-この profile は設定の総 rank 数を `srun -n` に指定する。
-設定の総 rank 数以上のタスクを allocation に確保する。
-各 rank に役割を割り当てる shell script と native manifest を共有ディレクトリへ
-生成し、`.cotocoa/runs/<ID>/` に実行記録とともに残す。
-`cotocoa status DIR` で状態を照会する。KUDPC の login/transfer node 上の run は拒否する。
-資源の予約や batch submit は CLI の外で行う。
+`cotocoa run` 自体を `srun -n 4` で複製しないでください。CLIが必要なMPIプロセスを起動します。
+KUDPC向けには[ジョブスクリプト](../examples/snapshot/kudpc.sbatch)もあります。
+利用可能なキューを `sbatch -p キュー名 examples/snapshot/kudpc.sbatch` で指定して投入します。
 
-## 言語を差し替える
+## 4. 結果を見る
 
-`examples/snapshot/cotocoa.yaml` の command だけを次から選ぶ。
-下のパスはこの設定ファイルのディレクトリからの相対パス。
+consumerには `step`、送信元の `source`、配列の平均 `mean` が表示されます。
 
-| 言語 | producer の command | consumer の command |
+- `step` は1〜10。
+- `source` は0または1。
+- 平均値は `step + source`。
+
+各producerが10件ずつ送るので、合計20件を受信します。
+同じ送信元のデータは順番に届きますが、2つの送信元の出力が混ざる順序は実行ごとに変わります。
+Cの例は平均の代わりに先頭値を表示します。このサンプルでは同じ値です。
+
+届く配列は1件ごとに `[3, 5, 7]` です。
+`[6, 5, 7]` の全体配列が必要な場合は、[Assembler](ASSEMBLY.md)を使います。
+
+## 5. 言語を差し替える
+
+同じ設定ファイルの `command` を、次の表から選んで置き換えます。
+ほかの接続設定はそのまま使えます。
+
+| 言語 | producerのcommand | consumerのcommand |
 | --- | --- | --- |
 | Fortran | `["../../build/snapshot_fortran", "producer"]` | `["../../build/snapshot_fortran", "consumer"]` |
 | C | `["../../build/snapshot_c", "producer"]` | `["../../build/snapshot_c", "consumer"]` |
 | Python | `["../../.venv/bin/python", "python.py", "producer"]` | `["../../.venv/bin/python", "python.py", "consumer"]` |
 
-Fortran/C のプログラムだけを起動する場合は、生成済み native manifest のパスを
-`COTOCOA_MANIFEST` に設定し、既存の MPMD launcher で producer、標準 Coupler、
-consumer をこの順序に配置する。Coupler は `build/cotocoa-coupler`。
-Python は manifest の事前生成や CLI に使えるが、MPI プロセスとしては不要。
-native API の config 引数へ manifest のパスを直接渡す方法にも対応する。
+たとえばproducerをFortran、consumerをPythonにすれば、Fortran→Pythonの連携になります。
+Fortran→Fortran、C→Fortran、Python→Cなども同じ手順です。
 
-初版では native API 自身は YAML を解析しない。config が YAML を指す場合は、
-launcher が `COTOCOA_MANIFEST` で対応する事前生成 manifest を渡す必要がある。
-設定を変更した場合は manifest を再生成する。
+パスは**設定ファイルのあるディレクトリ**を基準に解決します。
+この例では `examples/snapshot/` が基準です。設定を別の場所へコピーする場合はパスも合わせてください。
 
-## 送信と受信の契約
+## 自分のコードへ進む
 
-send はライブラリ所有の送信枠へコピーする。戻った後で元配列を上書きできる。
-受信側の処理が完了するまで送信枠を保持し、枠が満杯なら次の send が待機する。
-flush と producer の close は、自 rank の全送信が処理済み、またはlatestで未配送破棄済みに
-なるまで待つ。borrowの入力は対応するticketの完了まで保持・変更禁止とする。
+サンプルの全ソースは[Fortran](../examples/snapshot/fortran.f90)・[C](../examples/snapshot/c.c)・[Python](../examples/snapshot/python.py)にあります。
+まず配列を作る処理と受信後の処理を、自分の計算に置き換えると始めやすくなります。
 
-受信したメッセージは、処理後に必ず complete する。
-Fortran は `message%complete()`、C は `cotocoa_complete()` と
-`cotocoa_message_release()`、Python は `with message:` の正常終了を使う。
-処理前の解放、未完了のまま次を受信、ストリーム終端前の consumer の close は
-診断付きの失敗となる。Python の処理例外もジョブを失敗させる。
-
-受信コピーの寿命は通信上の完了と別に管理する。
-Fortran の `copy_to` は allocatable 配列へコピーし、complete が native Message を
-解放する。C の view は `cotocoa_message_release` まで有効。
-Python は NumPy 所有の読み取り専用配列へコピーするため、保存した配列は
-Context の終了後も有効。Python 受信にはこの追加コピーがある。
-Fortran の Context/Message と C の owning handle をコピーして二重に完了・解放しない。
-
-配列の論理 shape と軸順は全言語で共通。C/F のメモリ配置は descriptor に従って
-変換し、C 受信側の view は付属の byte stride で参照する。
-offset は全言語で 0 始まりの global 座標。各 producer rank の配列は個別に届き、
-同じ step の全領域を自動的に gather しない。
-
-計算コード自身の collective には Context の communicator を使う。
-MPMD 全体の `MPI_COMM_WORLD` をそのまま計算の communicator として使わない。
-MPI を Context が初期化した場合だけ close で終了し、借用した MPI は終了しない。
-close 後に他の役割が MPI を終了している場合、`MPI_COMM_WORLD` の collective に
-他の役割が参加することは前提にできない。
-
-## 検証
-
-設定と import の検証は次で実行する。計算ノード上でビルドとは別に実行できる。
-
-```sh
-.venv/bin/pip install pytest
-.venv/bin/python -m pytest -q
-```
-
-検証済み環境はKUDPC System A、Intel/Intel MPI、Python 3.12。
-最終回帰70 MPIケース、borrow54、Assembler27、Fortranの正負stride27、
-診断・互換性14ケースと37単体テストを通過した。
-C-only、C/Fortranのrelocatable install、fpm、clean archiveからの実wheelとMPI連携も検証した。
-別のMPI実装やlauncherの実機検証は、この結果に含めない。
-
-KUDPCのMPIテストは5 rankのallocation内でcontrollerを1回だけ起動する。
-[tests/kudpc-final.sbatch](../tests/kudpc-final.sbatch) をはじめ、機能ごとのscriptを用意している。
-実行方法、各テストの範囲、最終ジョブの結果は [検証記録](VALIDATION.md) を参照する。
+言語ごとの書き方は[Fortranガイド](API-Fortran.md)・[Cガイド](API-C.md)・[Pythonガイド](API-Python.md)、
+配列サイズやプロセス数の変更は[設定ファイル](CONFIGURATION.md)を参照してください。

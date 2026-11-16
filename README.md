@@ -1,70 +1,49 @@
-CoToCoA (Code To Code Adapter)
-=====
+# CoToCoA
 
-CoToCoA is a framework to enable coupled computations, such as multi-scale simulations. Instead of using intermediate files, it enables direct communication among multiple programs.
-Compared with similar frameworks, CoToCoA has the following advantages:
-- One-directional flow
-- Minimul modification to existing codes
-- Asynchronous execution
-- One-sided data transfer
+**Fortran・C・Python のプログラムを、MPIでつなぐ。**
 
-In this framework, the requester submits requests of computations to the coupler. For each request, the coupler determines which worker program to ask for the computation, then enqueues it with the program ID. The worker with that ID retrieves the request from the queue and executes it.
+CoToCoA（Code To Code Adapter）は、計算プログラム間で配列を受け渡すためのライブラリです。
+たとえば、Fortranのシミュレーションが計算した電位を、別のFortranプログラムやPythonの解析へ送れます。
+送信側と受信側は、3言語を自由に組み合わせられます。
 
-Currently, CoToCoA supports Fortran and C. Also, a Python package for worker programs is available.
-As the fundamental communication layer, it relies on the MPI library.
+プログラムには配列を送る処理・受け取る処理を書き、接続先やMPIプロセス数はYAMLで指定します。
+配送を担うCouplerは付属しているので、名前付きAPIを使う場合は自作する必要がありません。
 
-Developers of CoToCoA:
-- Takeshi Nanri (Kyushu Univ., Japan)
-- Yuto Katoh (Tohoku Univ., Japan)
-- Keiichiro Fukazawa (Kyoto Univ., Japan)
-- Yohei Miyake (Kobe Univ., Japan)
-- Kazuya Nakazawa (Kobe Univ., Japan)
-- Jingde Zhow (Kyoto Univ., Japan)
-- Youhei Sunada (Kobe Univ., Japan)
-- Haichao Zhao (Kyoto Univ., Japan)
+## はじめる
 
-## Fork development
+1. [インストール](docs/INSTALL.md)：ライブラリとコマンドを準備する
+2. [最初の連携を動かす](docs/HIGH-LEVEL-USAGE.md)：付属の例で配列を送受信する
+3. [連携のしくみ](docs/OVERVIEW.md)：役割、配列の分割、処理完了を理解する
 
-This fork's default branch is `main`, which includes the high-level API.
-The previous `master` branch is retained. The upstream repository's default
-branch and history are unchanged.
+自分のコードへ組み込むときは、[Fortran](docs/API-Fortran.md)・[C](docs/API-C.md)・[Python](docs/API-Python.md)のガイドを参照してください。
+[ドキュメント一覧](docs/README.md)から、目的に合うページを選べます。
 
-This fork's Fortran, C, and Python interfaces and configuration-driven
-coupling are described in [the high-level API design](docs/HIGH-LEVEL-API.md)
-(Japanese). All three languages can act as producers or consumers, including
-same-language connections.
-The implementation provides fixed 1D–3D int32/float32/float64 snapshots, a native Coupler,
-and `cotocoa check/plan/run`. See [the build and usage guide](docs/HIGH-LEVEL-USAGE.md)
-and [runnable examples](examples/snapshot). Multiple ports, fan-out, multiple
-producer programs, and typed task submission with worker groups are covered in
-[Tasks and ports](docs/TASKS-AND-PORTS.md).
-Streams support `all` and `latest` delivery, and both streams and tasks support
-borrowed inputs; see [delivery and data lifetime](docs/DELIVERY-AND-SHARING.md).
-Use the bounded [Assembler](docs/ASSEMBLY.md) for complete global frames, and
-[probe/status and runtime diagnostics](docs/DIAGNOSTICS.md) to inspect jobs.
-[Runnable task examples](examples/tasks) cover all three languages.
+## できること
 
-## Install
+| やりたいこと | 使う機能 |
+| --- | --- |
+| 計算の各ステップの配列を送る | [Stream](docs/HIGH-LEVEL-USAGE.md) |
+| 複数の解析へ同じ配列を送る | [複数の接続](docs/TASKS-AND-PORTS.md) |
+| 独立した処理を空いているワーカーへ依頼する | [Task](docs/TASKS-AND-PORTS.md#計算をワーカーへ依頼する) |
+| 遅い可視化へ新しい値を優先して送る | [latest配送](docs/DELIVERY-AND-SHARING.md) |
+| 送信時の配列コピーを省く | [borrow](docs/DELIVERY-AND-SHARING.md#送信時のコピーを省く) |
+| 分割された領域を1つの配列へまとめる | [Assembler](docs/ASSEMBLY.md) |
+| 起動の失敗や待ち状態を調べる | [起動とトラブルシューティング](docs/DIAGNOSTICS.md) |
 
-### ctca
-fpm.toml
+扱える配列は `int32`・`float32`・`float64` の1〜3次元です。
+型と形状は接続ごとに固定し、スライスなどの非連続配列も送れます。
+名前付きAPIは一方向の連携に対応します。双方向の接続や可変形状の配列が必要な場合は、
+[対応範囲](docs/HIGH-LEVEL-API.md)を確認してください。
 
-```toml
-[dependencies]
-ctca = { git = "https://github.com/Nkzono99/cotocoa.git" }
-```
+## 既存のCoToCoAを使っている方へ
 
-### High-level Fortran, C, and Python API
+`ctca.h`、Fortranの `ctca` モジュール、Pythonの `ctca4py.CTCAWorker` も利用できます。
+既存のRequester・Coupler・Workerを使う手順は、[従来APIの利用ガイド](docs/USAGE.md)にまとめています。
 
-Build the native library with CMake and matching MPI C/Fortran compilers, then
-install the Python package from this repository with `pip install -e .`.
-For a C-only build, set `-DCOTOCOA_ENABLE_FORTRAN=OFF`. Native CMake install
-exports `cotocoa::cotocoa` and the optional `cotocoa::cotocoa_fortran` target.
-The native build and Python installation are separate steps; see the guide above.
+このリポジトリは [tnanri/cotocoa](https://github.com/tnanri/cotocoa) を基にした
+[Nkzono99/cotocoa](https://github.com/Nkzono99/cotocoa) です。
+本書は、このリポジトリの `main` で提供する機能を説明します。
+ライセンスは [LICENSE](LICENSE) を参照してください。
 
-### Legacy ctca4py
-
-The original Worker interface remains under `ctca4py/`; its Python package
-metadata is in that subdirectory. It is separate from the new `cotocoa` package.
-Install it with `pip install ./ctca4py`; set `CTCA4PY_LIBRARY` to the matching
-native library when it is outside the standard library search path.
+CoToCoAの開発者：Takeshi Nanri、Yuto Katoh、Keiichiro Fukazawa、Yohei Miyake、
+Kazuya Nakazawa、Jingde Zhow、Youhei Sunada、Haichao Zhao。

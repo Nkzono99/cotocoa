@@ -1,115 +1,51 @@
-CoToCoA Coupler API
-=====
+# 従来API：Coupler
 
-## Initialize
-- [CTCAC_init](api/ctcac_init.md "CTCAC_init")
+[ドキュメント一覧](README.md) · [従来APIの利用ガイド](USAGE.md) · [API一覧](API.md)
 
-    Initialize CoToCoA as the coupler process.
+Requesterの依頼を受け取り、progidで選んだWorkerへ配送します。
+各リンク先に引数と戻り値の詳細（英語）があります。
 
-- [CTCAC_init_detail](api/ctcac_init_detail.md "CTCAC_init_detail")
+## 開始・終了と終了確認
 
-    Initialize CoToCoA as the coupler process with detailed settings.
+| 関数 | 用途 |
+| --- | --- |
+| [CTCAC_init](api/ctcac_init.md) | 既定値で初期化 |
+| [CTCAC_init_detail](api/ctcac_init_detail.md) | 容量を指定して初期化 |
+| [CTCAC_finalize](api/ctcac_finalize.md) | 終了処理 |
+| [CTCAC_isfin](api/ctcac_isfin.md) | Requester全体の終了を確認 |
 
-## Finalize
-- [CTCAC_finalize](api/ctcac_finalize.md "CTCAC_finalize")
+## 受信と配送
 
-    Finalize CoToCoA.
+| 関数 | 用途 |
+| --- | --- |
+| [CTCAC_pollreq](api/ctcac_pollreq.md) | 整数パラメータ付きの依頼を受信 |
+| [CTCAC_enqreq](api/ctcac_enqreq.md) | Workerへ依頼を配送 |
+| [CTCAC_pollreq_withint](api/ctcac_pollreq_withint.md) | 整数配列付きの依頼を受信 |
+| [CTCAC_enqreq_withint](api/ctcac_enqreq_withint.md) | 整数配列を添付して配送 |
+| [CTCAC_pollreq_withreal4](api/ctcac_pollreq_withreal4.md) | 単精度配列付きの依頼を受信 |
+| [CTCAC_enqreq_withreal4](api/ctcac_enqreq_withreal4.md) | 単精度配列を添付して配送 |
+| [CTCAC_pollreq_withreal8](api/ctcac_pollreq_withreal8.md) | 倍精度配列付きの依頼を受信 |
+| [CTCAC_enqreq_withreal8](api/ctcac_enqreq_withreal8.md) | 倍精度配列を添付して配送 |
 
-## Check the finalization of the requester
-- [CTCAC_isfin](api/ctcac_isfin.md "CTCAC_isfin")
+## 共有領域
 
-    Check if all of the processes of the requester has called CTCAR_finalize.
+| 関数 | 用途 |
+| --- | --- |
+| [CTCAC_regarea_int](api/ctcac_regarea_int.md) | 整数領域の登録に参加 |
+| [CTCAC_regarea_real4](api/ctcac_regarea_real4.md) | 単精度領域の登録に参加 |
+| [CTCAC_regarea_real8](api/ctcac_regarea_real8.md) | 倍精度領域の登録に参加 |
+| [CTCAC_readarea_int](api/ctcac_readarea_int.md) | 整数領域の読み取り |
+| [CTCAC_readarea_real4](api/ctcac_readarea_real4.md) | 単精度領域の読み取り |
+| [CTCAC_readarea_real8](api/ctcac_readarea_real8.md) | 倍精度領域の読み取り |
+| [CTCAC_writearea_int](api/ctcac_writearea_int.md) | 整数領域の書き込み |
+| [CTCAC_writearea_real4](api/ctcac_writearea_real4.md) | 単精度領域の書き込み |
+| [CTCAC_writearea_real8](api/ctcac_writearea_real8.md) | 倍精度領域の書き込み |
 
-## Poll for a request from the requester
-- [CTCAC_pollreq](api/ctcac_pollreq.md "CTCAC_pollreq")
+## 時間計測
 
-    Poll for a request from one of the process of the requester.
-
-- [CTCAC_pollreq_withint](api/ctcac_pollreq_withint.md "CTCAC_pollreq_withint")
-
-    Poll for a request with an integer array from one of the process of the requester.
-
-- [CTCAC_pollreq_withreal4](api/ctcac_pollreq_withreal4.md "CTCAC_pollreq_withreal4")
-
-    Poll for a request with a real (4byte) array from one of the process of the requester.
-
-- [CTCAC_pollreq_withreal8](api/ctcac_pollreq_withreal8.md "CTCAC_pollreq_withreal8")
-
-    Poll for a request with a real (8byte) array from one of the process of the requester.
-
-## Enqueue a request to the worker
-- [CTCAC_enqreq](api/ctcac_enqreq.md "CTCAC_enqreq")
-
-    Enqueue a request to one of the workers.
-
-- [CTCAC_enqreq_withint](api/ctcac_enqreq_withint.md "CTCAC_enqreq_withint")
-
-    Enqueue a request to one of the workers with an integer array attached.
-
-- [CTCAC_enqreq_withreal4](api/ctcac_enqreq_withreal4.md "CTCAC_enqreq_withreal4")
-
-    Enqueue a request to one of the workers with a real (4byte) array attached.
-
-- [CTCAC_enqreq_withreal8](api/ctcac_enqreq_withreal8.md "CTCAC_enqreq_withreal8")
-
-    Enqueue a request to one of the workers with a real (8byte) array attached.
-
-## Participate registration of an area of the requester
-- [CTCAC_regarea_int](api/ctcac_regarea_int.md "CTCAC_regarea_int")
-
-    Participate the registration of an integer array of the requester to retrieve the area ID.
-
-- [CTCAC_regarea_real4](api/ctcac_regarea_real4.md "CTCAC_regarea_real4")
-
-    Participate the registration of an real (4byte) array of the requester to retrieve the area ID.
-
-- [CTCAC_regarea_real8](api/ctcac_regarea_real8.md "CTCAC_regarea_real8")
-
-    Participate the registration of an real (8byte) array of the requester to retrieve the area ID.
-
-## Read data from the area of the requester
-- [CTCAC_readarea_int](api/ctcac_readarea_int.md "CTCAC_readarea_int")
-
-    Read data from an integer array area of the requester.
-
-- [CTCAC_readarea_real4](api/ctcac_readarea_real4.md "CTCAC_readarea_real4")
-
-    Read data from a real (4byte) array area of the requester.
-
-- [CTCAC_readarea_real8](api/ctcac_readarea_real8.md "CTCAC_readarea_real8")
-
-    Read data from a real (8byte) array area of the requester.
-
-## Write data to the area of the requester
-- [CTCAC_writearea_int](api/ctcac_writearea_int.md "CTCAC_writearea_int")
-
-    Write data to an integer array area of the requester.
-
-- [CTCAC_writearea_real4](api/ctcac_writearea_real4.md "CTCAC_writearea_real4")
-
-    Write data to a real (4byte) array area of the requester.
-
-- [CTCAC_writearea_real8](api/ctcac_writearea_real8.md "CTCAC_writearea_real8")
-
-    Write data to a real (8byte) array area of the requester.
-
-## Profile
-- [CTCAC_prof_start](api/ctcac_prof_start.md "CTCAC_prof_start")
-
-    Start profiling.    
-
-- [CTCAC_prof_stop](api/ctcac_prof_stop.md "CTCAC_prof_stop")
-
-    Stop profiling.
-
-- [CTCAC_prof_start_calc](api/ctcac_prof_start_calc.md "CTCAC_prof_start_calc")
-
-    Start position of the region of "Calculation Time".
-
-- [CTCAC_prof_stop_calc](api/ctcac_prof_stop_calc.md "CTCAC_prof_stop_calc")
-
-    Stop position of the region of "Calculation Time".
-
-##
-
-[Back to CoToCoA API](API.md "Back to CoToCoA API")
+| 関数 | 用途 |
+| --- | --- |
+| [CTCAC_prof_start](api/ctcac_prof_start.md) | 計測開始 |
+| [CTCAC_prof_stop](api/ctcac_prof_stop.md) | 計測終了 |
+| [CTCAC_prof_start_calc](api/ctcac_prof_start_calc.md) | 計算時間の計測区間を開始 |
+| [CTCAC_prof_stop_calc](api/ctcac_prof_stop_calc.md) | 計算時間の計測区間を終了 |

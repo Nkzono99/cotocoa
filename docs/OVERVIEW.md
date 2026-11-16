@@ -1,34 +1,96 @@
-Overview of CoToCoA
-======
+# 連携のしくみ
 
-CoToCoA is a framework to enable coupled computations, such as multi-scale simulations. Instead of using intermediate files, it enables direct communication among multiple programs.
-Compared with similar frameworks, CoToCoA has the following advantages:
-- One-directional flow
-- Minimul modification to existing codes
-- Asynchronous execution
-- One-sided data transfer
+[ドキュメント一覧](README.md) · 前：[最初の連携](HIGH-LEVEL-USAGE.md)
 
-CoToCoA assumes that the flows of coupled computations are one-directional, originated from one type of program and targeted to another type of program. Those two types of programs are called the "requester" and the "worker", respectively. The requester sends requests which will be executed by one of the workers. CoToCoA allows one requester program with multiple worker programs. The requester sends requests that will be handled by one of the workers.
+CoToCoAでは、データを作るプログラムと、データを処理するプログラムを分けて起動します。
+それぞれはC・Fortran・Pythonのどれで書いても構いません。
 
-To ease the burden of constructing programs to enable coupled computations, CoToCoA is designed to minimize the modifications to the existing programs to connect each other. Therefore, it uses another program called the "coupler" to be placed between the requester and the workers. 
-Fundamentaly, the coupler is responsible for:
-- Accepting requests sent from the requester.
-- Choosing an appropriate worker program to handle the request.
-- Enqueue the request to the worker with the ID of the program.
+## 3つの役割
 
-Basically, request flows of CoToCoA are asynchronous. The requester does not have to wait for the completion of each request. If the requester must wait for the completion of the specific request, the requester can retrieve a handle from the send-request routine, so that it can use it in the wait routine later.
+```text
+producer（配列を作る）
+        │
+        ▼
+Coupler（配送する）
+        │
+        ▼
+consumer（配列を処理する）
+```
 
-CoToCoA allows one-sided communication by allowing the requester to expose some of its memory area.
-Such area can be directly read or written by the coupler or the worker.
-In addition to that, a request of CoToCoA includes an array of integer parameters that are used to pass minimal information to control the execution in the worker program. 
-Also, CoToCoA allows one array to be attached to each of the requests. 
-Therefore, for example, the following methods can be used to transfer data between the requester and the workers:
-- The requester attaches one array to the request which is forwarded to the worker via the coupler.
-- The coupler reads some data from the exposed area of the requester which is used to create an array that will be attached to the request to the worker.
-- The worker reads some data from the exposed area of the requester.
-- The worker writes some data to the exposed area of the requester as feedbacks.
+| 役割 | 利用者が書く処理 |
+| --- | --- |
+| producer | 計算した配列を、名前付きポートへ送る |
+| Coupler | 名前付きAPIでは付属のプログラムを使う |
+| consumer | 配列を受信し、処理が終わったことを通知する |
 
-CoToCoA runs three types of programs, the requester, the coupler and the workers, by using MPMD (Multiple Programs Multiple Data) facility of MPI.
-The processes are divided into subcommunicators according to their roles.
-The number of processes of each subcommunicators are controlled by the MPMD options of mpirun, and the number of processes for each of the worker programs specified by the worker initialization routine of CoToCoA.
+どのプログラムをつなぐかはYAMLに記述します。
+各プログラムの `Context` は、設定に書いた自分の名前で開きます。
 
+1つのプログラムは送信側か受信側のどちらかです。
+同じプログラムが両方を兼ねる接続や、循環する接続には対応していません。
+
+## StreamとTaskを選ぶ
+
+**Stream**は、計算ステップごとの配列を解析などへ渡す用途に向いています。
+通常は全件を順に受け取ります。表示用のデータなど、途中の値を省いてよい場合は
+[latest配送](DELIVERY-AND-SHARING.md)を選べます。
+
+**Task**は、独立した計算をワーカーへ依頼する用途に向いています。
+空いているワーカーグループへ入力配列を渡し、Ticketで処理完了を確認できます。
+Ticketが返すのは完了状態です。計算結果の配列を送り返す機能ではありません。
+詳しくは[Taskの使い方](TASKS-AND-PORTS.md#計算をワーカーへ依頼する)を参照してください。
+
+## 1回の送信で届くもの
+
+1件のメッセージには、配列と、その配列を解釈するための情報が入ります。
+
+| 情報 | 例 | 意味 |
+| --- | --- | --- |
+| ポート | `potential` | プログラム内の送受信口 |
+| `step` | `10` | 利用者が付ける計算ステップ |
+| `time` | `0.5` | 必要な場合に付ける物理時刻 |
+| `shape` | `[3, 5, 7]` | 今回届いた配列の大きさ |
+| `global_shape` | `[6, 5, 7]` | 全領域の大きさ |
+| `offset` | `[3, 0, 0]` | 全領域の中での、この配列の開始位置 |
+| `source_rank` | `1` | 送信プログラム内のMPI rank |
+
+領域を分割している場合、各producer rankの配列は別々に届きます。
+この局所配列を「shard」と呼びます。`global_shape` を設定しても、自動では結合されません。
+全体を1つの配列として使うには[Assembler](ASSEMBLY.md)を使います。
+
+**offsetはFortranでも0始まりです。**
+配列の軸順は言語間で共通なので、CとFortranの記憶配置の違いに合わせてshapeを逆順にする必要はありません。
+
+## 受信したら完了を通知する
+
+受信側は「受信 → 処理 → 完了通知」を繰り返します。
+完了通知によって送信枠が空き、producerはその枠を次の配列に使えます。
+
+| 言語 | 完了を通知する書き方 |
+| --- | --- |
+| Fortran | `call message%complete()` |
+| C | `cotocoa_complete(...)` の後に `cotocoa_message_release(...)` |
+| Python | `with message:` の正常終了 |
+
+1つの受信グループが同時に保持できる未完了メッセージは1件です。
+次を受信する前に、現在のメッセージを完了させてください。
+バッファが満杯になると送信側は待ちます。送信APIが戻っても、受信側の処理が終わったとは限りません。
+
+## MPIと正常終了
+
+各プログラムの計算には、Contextから取得したcommunicatorを使います。
+`MPI_COMM_WORLD` にはCouplerやほかのプログラムも含まれるため、
+自分の計算だけで行うcollective操作には使いません。
+
+受信側が複数rankある場合、同じグループの全rankが受信と完了通知を行います。
+配列はグループ内の各rankへ渡されます。
+
+送信側は送信を終えたらContextを閉じます。closeは残っている処理の完了を待ちます。
+受信側は終端まで受信し、その後Contextを閉じます。
+途中で受信ループを抜けてcloseする使い方はできません。
+
+ContextがMPIを初期化した場合は、close時にMPIも終了します。
+利用者のコードやmpi4pyが先に初期化していた場合は、MPIの終了は元の所有者が担当します。
+Contextは1プロセスで1回だけ開閉できます。
+
+次は使う言語のガイドへ進んでください：[Fortran](API-Fortran.md)・[C](API-C.md)・[Python](API-Python.md)。

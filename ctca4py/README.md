@@ -1,12 +1,20 @@
-# Legacy Python Worker interface
+# ctca4py
 
-Install with `python -m pip install ./ctca4py` from the repository root.
-Build the matching native library using the root CMake project. Set
-`CTCA4PY_LIBRARY=/absolute/path/to/libcotocoa.so` if it is outside the standard
-library search path. `COTOCOA_LIBRARY` is accepted too. Existing standalone
-`ctca4py.so` builds remain usable when they expose the same legacy ABI.
+従来のCoToCoAのWorkerをPythonで書くためのパッケージです。
+C・FortranのRequesterとCouplerから依頼を受け取り、NumPy配列で処理できます。
 
-Use `from ctca4py import CTCAWorker` or the original
-`from ctca4py.ctcaworker import CTCAWorker`. This package preserves the low-level
-Worker API; the `cotocoa` package provides the new named ports and all three
-language roles. Build mpi4py and the native library against the same MPI.
+## インストール
+
+CoToCoAのリポジトリ直下で、ネイティブライブラリをビルドした後に実行します。
+
+```sh
+python -m pip install ./ctca4py
+export CTCA4PY_LIBRARY="/absolute/path/to/libcotocoa.so"
+```
+
+mpi4pyとネイティブライブラリは、同じMPI実装を使ってください。
+importは `from ctca4py import CTCAWorker`、
+または `from ctca4py.ctcaworker import CTCAWorker` です。
+
+[インストールから受信ループまでの利用ガイド](../docs/USAGE_from_Python.md)を参照してください。
+Pythonからも送信したい場合は、[名前付きAPIのcotocoaパッケージ](../docs/API-Python.md)を使えます。

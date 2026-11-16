@@ -1,147 +1,85 @@
-# CoToCoA 高水準 API 0.3 の設計と契約
+# 名前付きAPIの共通仕様
 
-対象は `Nkzono99/cotocoa` の独自拡張。設計の基点は
-`8f705f8c6aa8e7c51b98f50c211dd360d247191a`。
-本書は実装後の契約を示す。導入とコード例は [利用ガイド](HIGH-LEVEL-USAGE.md)、
-検証結果は [実装状況](IMPLEMENTATION-STATUS.md) を参照する。
+[ドキュメント一覧](README.md) · [API一覧](API.md)
 
-## 目的と構成
+このページは、C・Fortran・Pythonに共通する仕様をまとめたリファレンスです。
+初めて使う場合は[最初の連携](HIGH-LEVEL-USAGE.md)から始めてください。
 
-Fortran・C・Python の各言語を producer と consumer の両方に使える。
-同じ言語同士を含め、全9通りを対象とする。利用者は名前付きポート、配列、
-step/時刻/領域の位置と処理を書く。area ID、progid、整数 request header と
-通常の Coupler 配送ループは共通の C 層へ移す。
+## 言語間の対応
 
-| 役割 | C | Fortran | Python |
+| 操作 | Fortran | C | Python |
 | --- | --- | --- | --- |
-| セッション | `cotocoa_context` | `ctca_context` | `Context` |
-| stream snapshot | `cotocoa_send` | `%send` | `.send` |
-| stream borrow | `cotocoa_borrow` | `%borrow` | `.borrow` |
-| Task snapshot | `cotocoa_submit` | `%submit` | `.submit` |
-| Task borrow | `cotocoa_submit_borrow` | `%submit_borrow` | `.submit(borrow=True)` |
-| 受信 | `cotocoa_receive/next_task` | `%receive/next_task` | `.receive/tasks` |
-| 完了 | `cotocoa_complete` | message `%complete` | message `.complete` / context manager |
-| 完了待ち | ticket `test/wait`、`flush` | ticket `%test/wait`、`%flush` | ticket `.test/wait`、`.flush` |
-| 全体の配列 | `cotocoa_assembler_*` | `ctca_assembler` | `Assembler` |
+| Context | `ctca_context` | `cotocoa_context` | `Context` |
+| Stream送信 | `ctx%send` | `cotocoa_send` | `ctx.send` |
+| Stream借用送信 | `ctx%borrow` | `cotocoa_borrow` | `ctx.borrow` |
+| Task送信 | `ctx%submit` | `cotocoa_submit` | `ctx.submit` |
+| Task借用送信 | `ctx%submit_borrow` | `cotocoa_submit_borrow` | `ctx.submit(borrow=True)` |
+| Stream受信 | `ctx%receive` | `cotocoa_receive` | `ctx.receive` |
+| Task受信 | `ctx%next_task` | `cotocoa_next_task` | `ctx.tasks` |
+| 処理完了 | `message%complete` | `cotocoa_complete` | `message.complete` |
+| 完了確認・待機 | `ticket%test/wait` | `cotocoa_ticket_test/wait` | `ticket.test/wait` |
+| 全送信の完了待ち | `ctx%flush` | `cotocoa_flush` | `ctx.flush` |
+| 領域の組み立て | `ctca_assembler` | `cotocoa_assembler` | `Assembler` |
 
-既存の `ctca.h`、Fortran `ctca`、Python `ctca4py.CTCAWorker` は残す。
-新 C ABI は `cotocoa.h`、Fortran は `cotocoa` モジュール、Python は `cotocoa` パッケージ。
-Python と Fortran は同じ C 層を呼ぶ。標準 Coupler と probe は native 実行ファイル。
-check/plan/run/probe/status の CLI は Python で実装するが、manifest を事前生成すれば
-C/Fortran 同士の MPI ジョブ内に Python プロセスを含める必要はない。
+各言語の引数・コード例は[Fortran](API-Fortran.md)・[C](API-C.md)・[Python](API-Python.md)を参照してください。
 
-## 接続と配列
+## 配列とメタデータ
 
-YAML schema 1 を起動前に manifest へ変換する。2〜64 programs、1〜256 connections を
-受け付け、各 program の command/ranks/group_size、各接続の名前、from/to、kind、dtype、
-shape/global_shape、axes、units/time_unit、mode、distribution、delivery、buffer_slots を検査する。
-不明な設定キー、重複キー、未接続 program、循環、曖昧な task fan-out は拒否する。
-実行コマンドの相対パスは設定ファイルを基準に解決し、shell 展開しない。
+配列は固定形状の1〜3次元で、`int32`・`float32`・`float64` に対応します。
+CとPythonではバイト単位のstride、Fortranでは配列sectionによって非連続配列を指定できます。
 
-配列は native の int32、float32、float64、固定1〜3次元。
-論理添字の順序を軸の順序とし、C/F の記憶配置から独立させる。
-転送・受信内部は第一添字が最も速い canonical 配置。dtype、shape、軸、単位を
-自動変換しない。C/Python は正負と0の byte stride、Fortran は型・次元ごとの
-generic と配列 section を扱う。snapshot は packing し、borrow は descriptor を公開する。
+shapeとaxesは論理的な軸順です。言語による記憶配置の違いはライブラリが扱います。
+受信するCのviewは、付属のstrideに従って読んでください。
+offsetはすべての言語で0始まりです。
 
-`distribution: shards` は各 producer rank の局所領域を source_rank と offset 付きで渡す。
-global_shape は領域の上限であり、配送自体は shard の完全性を保証しない。
-全体が必要な consumer は [Assembler](ASSEMBLY.md) で照合する。
-step は int64、time は任意の有限な float64。時刻の単位と軸・値の単位は schema の文字列。
+| メタデータ | 意味 |
+| --- | --- |
+| `name` / `port` | 接続名 / 受信側のポート名 |
+| `source` / `source_rank` / `source_count` | 送信プログラム名 / その中のrank / そのプログラムのrank数 |
+| `step` / `sequence` | 利用者が付けるint64のステップ / ライブラリが付ける送信順序番号 |
+| `time` | 任意の有限な倍精度時刻。時刻を付けたかどうかも保持する |
+| `shape` / `global_shape` / `offset` | 局所形状 / 全体形状 / 局所領域の開始位置 |
+| `dtype` / `axes` / `units` / `time_unit` | 配列の型、軸名、値と時刻の単位 |
+| `kind` / `mode` / `delivery` | Stream・Task、snapshot・borrow、all・latestの区別 |
 
-同じ producer port を複数 consumer へ接続できる。型・shape・軸・単位・mode・kind は
-全宛先で一致させ、各宛先で delivery と送信枠数を選ぶ。
-複数 producer programs と複数入力 port も可能。
-入力 port が複数ある consumer は receive-any を使い、受信 Message の port/name/source で分岐する。
-名前指定 receive は全入力がその port の場合だけ使える。特定 port を待って他の
-メッセージを無制限に退避する動作はしない。
+各source rankの配列は別々のメッセージです。
+全領域の欠落や重複を確認して結合する場合は[Assembler](ASSEMBLY.md)を使います。
 
-## 配送・所有権・Task
+## 配送と完了
 
-[配送と保持の詳細](DELIVERY-AND-SHARING.md) に従う。
-`all` は正常な1ジョブ内で各受理メッセージを1回ずつ渡し、stream は接続・source rank ごとの
-順序を保つ。rank 間の全順序と外部副作用の exactly-once は保証しない。
-`latest` は同じ接続・source の未配送分を破棄し、処理中の値を保持する。
-sequence は増加し、中間値が飛ぶ。最後の値は flush/close が待つ。
+`all` は正常な1ジョブ内で受理した全メッセージを処理へ渡します。
+Streamは接続・送信元rankごとの順序を保ちます。
+異なるrank間の全体の順序や、Taskの処理完了順は保証しません。
 
-snapshot の send/submit は戻る前に入力をライブラリへコピーする。
-borrow の公開中は利用者が元配列を保持し、完了まで変更しない。
-Python は元 ndarray の参照を Context へ保持する。C/Fortran は利用者が寿命を管理する。
-borrow ticket の完了は全宛先の処理完了、または latest の未配送破棄を表す。
-ticket release は取消しではない。
+`latest` は同じ接続・送信元の未配送分を置き換えます。
+処理中のメッセージは変更しません。
+借用送信のTicketは、全宛先の処理完了、または未配送での置換をもって完了します。
 
-受信側はローカル snapshot を所有する。consumer group の各 rank に同じ値を配布し、
-receive/complete は group collective とする。1 group に未完了 Message は1件。
-完了まで送信側の枠または借用登録を保持する。
-C の view は Message の release まで有効。Fortran の copy_to と Python の array は
-呼び出し側のコピーなので Message/Context の終了後も保持できる。
+受信と完了通知はconsumerグループ内のcollective操作です。
+各rankが同じ順に呼び、未完了のメッセージは1グループにつき1件にします。
+受信した配列を後で使う場合の寿命は[配送と配列の保持](DELIVERY-AND-SHARING.md)を参照してください。
 
-Task は `kind: task, delivery: all` とし、1 operation に1宛先。
-consumer の ranks を group_size で分割して空いた group に依頼する。
-group 内の配布と complete は collective。group 間の処理完了順は保証しない。
-ticket test/wait は処理の完了を示し、結果値を返す RPC ではない。
-複数 group を使う consumer は Task 専用入力とする。
-[Task と複数 port](TASKS-AND-PORTS.md) に実行例と詳細を示す。
+## ContextとMPI
 
-## 内部実装と容量
+Contextは1プロセスにつき1つで、開閉は1回です。
+openとcloseには連携ジョブ全体が参加し、通信操作は各プロセスの1つのスレッドから呼びます。
 
-snapshot は各接続の登録済みリングに packing する。Coupler は48個の32bit整数からなる
-制御 header だけを配送し、consumer root が RMA で読み、group に配布する。
-header は protocol 2、magic、manifest digest、接続、source、slot、sequence、step、
-time、offset、shape、dtype/dim と、borrow 用の絶対アドレス・stride を持つ。
-64bit 値は2語へ分割し、C struct の padding を転送形式に使わない。
+MPI未初期化時はContextが初期化・終了します。初期化済みのMPIを利用した場合は終了しません。
+利用者のcollectiveにはContextのcommunicatorを使ってください。
+Contextを閉じた後、ほかの役割が `MPI_COMM_WORLD` のcollectiveに参加するとは限りません。
 
-borrow は動的 MPI window と attach/detach を使い、受信 root の derived datatype で
-stride を解釈する。登録範囲の参照数を管理し、処理中の領域を detach しない。
-MPI window の公開領域と完了状態表は明示的に同期する。
+producerのcloseは残りの送信の完了を待ちます。
+consumerは受信終端を確認してからcloseします。
+Contextを閉じた後も、保持しているTicketの完了状態は確認できます。
 
-送信枠を使い切ったら完了を待つ。producer rank ごとの全出力枠数は4094以下、
-Coupler queue は全 producer rank の全枠数から求め、int の上限未満とする。
-既存 request 符号化の制約から producer rank 合計は524288以下。
-局所 payload は `INT_MAX/8` 要素以下。各入力配列は byte extent の overflow も検査する。
-無制限の送信 queue や背景スレッドは設けない。
+## 対応範囲
 
-plan は送信枠、受信配列、Python の追加コピーの保持量を表示する。
-borrow の元配列、利用者が保持するコピー、Assembler、MPI の内部メモリは別途必要。
-manifest の現行出力は版3で、以前の単一接続の版1・2も native reader で受け付ける。
-全 rank は同じ manifest と互換な MPI/data ABI を使い、起動時に照合する。
+| 対応すること | 対応しないこと |
+| --- | --- |
+| C・Fortran・Python間の全組み合わせ | 同一プログラムの送受信兼任、双方向・循環連携 |
+| 固定の型・形状、非連続配列 | 可変形状、AMR、構造体、複素数 |
+| 明示した軸・単位・領域位置の受け渡し | 自動の単位変換、補間、領域の再分割 |
+| Taskの処理完了通知 | 任意の戻り値を返すRPC、取消し、自動再実行 |
+| 実行中の診断と時間制限 | MPI障害からの復旧、永続配送、外部への書き込みの一度限りの実行保証 |
 
-## ライフサイクルと診断
-
-既存バックエンドの static 状態に合わせ、1 process に1 Context、1回の open/close とする。
-MPI 未初期化なら Context が初期化して所有し、close で終了する。
-既存シミュレーションや mpi4py が初期化済みなら借用し、close 後もその MPI を使える。
-内部 communicator と window はどちらの経路でも解放する。
-Contextの通信操作は各processの1つの呼び出しthreadから行う。
-import や Python/Fortran の finalizer に collective 終了を任せない。
-
-producer close は flush 後に終了を通知する。全 producer が終了し、配送・処理が
-空になったら consumer の受信を終了する。consumer は終端まで受信してから close する。
-未完了 Message を持つ close、group 内の受信契約不一致、Python 処理例外は診断付きで abort する。
-
-[起動と診断](DIAGNOSTICS.md) は static check、native probe、明示 launcher、
-run watchdog、native progress の待機上限、永続 run/rank 状態の組合せで提供する。
-blocking MPI や利用者計算を native timeout で中断できるとは扱わない。
-MPI プロセス障害は fail-fast とし、復旧や再配信を行わない。
-
-## この版の対象外
-
-- 同一 program/process の producer と consumer の兼任、双方向・循環連成。
-- 同一 process の複数 Context、reopen、任意 communicator の独立セッション。
-- AMR、可変 dtype/shape、構造体、複素数、暗黙の単位変換・補間・再分割。
-- Task の任意戻り値、result channel、取消し、処理失敗からの再実行。
-- MPI 障害からの復旧、永続メッセージ、外部副作用の exactly-once。
-
-これらは初版の公開契約へ含めない。既存の低水準 regarea/readarea/writearea が必要な
-用途では、その API を引き続き使える。
-
-## fork の運用
-
-origin は `https://github.com/Nkzono99/cotocoa.git`。
-GitHub 上で親が `tnanri/cotocoa` の fork であることを作業開始時に確認した。
-fork の既定ブランチは高水準APIを含む `main` とし、従来の `master` も保持する。
-この設定はfork内だけの変更であり、本家の既定ブランチや履歴は変更しない。
-この checkout は `remote.pushDefault=origin`、作業 branch の pushRemote も origin。
-upstream の push URL は `disabled://upstream-read-only` とし、本家への push/PR は行わない。
-これらの Git 設定はローカルであり、別の clone へ自動では引き継がれない。
-既存の著作権表示と MIT ライセンスを保持する。
+従来の共有領域の読み書きを使う場合は、[従来API](USAGE.md)を利用できます。

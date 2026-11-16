@@ -1,16 +1,21 @@
-# 複数接続と計算依頼
+# 複数の接続とTask
 
-各プログラムの役割は接続の from/to から決める。複数の producer と consumer を
-指定でき、各 producer は自身の MPI communicator を持つ。producer と consumer を
-兼ねる同一プロセスや循環する接続は設定検証で拒否する。
+[ドキュメント一覧](README.md) · 前提：[最初の連携](HIGH-LEVEL-USAGE.md)
 
-## 複数ポートの受信
+複数の配列を受け取る、同じ配列を複数の解析へ渡す、計算をワーカーへ分配する方法を説明します。
 
-1つの consumer が異なるポートを受信するときは、全ポートを受けるループを使う。
-メッセージの接続名、受信ポート、送信プログラム、送信 rank、型、次元で処理を選ぶ。
+## 複数のポートから受け取る
+
+電位と密度のように入力ポートが複数ある場合は、名前を指定せずに受信します。
+届いたメッセージの `port` で処理を分けてください。
+
+次は `analysis` というconsumerの例です。
+`analyze_potential` と `analyze_density` は利用者の処理に置き換えます。
 
 ```python
-with Context("analysis", config="cotocoa.yaml") as ctx:
+from cotocoa import Context
+
+with Context("analysis") as ctx:
     for message in ctx.receive():
         with message:
             if message.port == "potential":
@@ -19,51 +24,62 @@ with Context("analysis", config="cotocoa.yaml") as ctx:
                 analyze_density(message.array, message.step)
 ```
 
-C は `cotocoa_receive(ctx, NULL, ...)`、Fortran は
-`call ctx%receive("*", message, has_message=available)` に対応する。
-Fortran の `message%name()/port()/source()/source_rank()/kind()/dtype()/ndim()` と
-C の `cotocoa_message_metadata` から同じ情報を取得する。
+| 言語 | 全入力ポートを受信する指定 |
+| --- | --- |
+| Python | `ctx.receive()` |
+| Fortran | `call ctx%receive('*', message, has_message=available)` |
+| C | `cotocoa_receive(ctx, NULL, &message, &error)` |
 
-名前を指定する receive は、当該 consumer の全入力がそのポートを使う場合に限る。
-異なるポートのメッセージを黙って読み飛ばしたり、届いたメッセージを保持したまま
-別のポートを待ったりしない。複数のポートがあるときの named receive は明示的な
-エラーとし、受信の順番による停止を防ぐ。
+名前付き受信は、consumerの全入力が同じポート名の場合に使えます。
+ほかのポートを持つconsumerで特定の名前だけを待つとエラーになります。
+複数の送信プログラムを区別する場合は `source`、接続を区別する場合は `name` を見ます。
 
-## 同じデータを複数宛先へ送る
+1グループのconsumerでStreamとTaskを両方受ける場合も、receive-anyを使い、
+メッセージの `kind` で区別します。`tasks`・`next_task` は、入力がすべてTaskの場合に使います。
 
-同じ from に対して to の異なる接続を宣言する。接続名はそれぞれ別にする。
-dtype、shape、global_shape、axes、units、time_unit、mode は同じ schema にする。
-producer の send は各宛先に独立した送信枠で snapshot を送り、各宛先の完了まで
-保持する。遅い宛先の枠が埋まると次の送信を待つ。
+## 同じ配列を複数の解析へ送る
+
+同じ `from` から、異なる `to` へ接続を定義します。
+以下は、シミュレーションの電位を保存処理と表示処理へ送る `connections` の例です。
+`programs` には `simulation`・`archive`・`display` をそれぞれ宣言してください。
 
 ```yaml
 connections:
-  - name: potential_analysis
-    from: pic.potential
-    to: analysis.potential
+  - name: potential_archive
+    from: simulation.potential
+    to: archive.potential
     dtype: float64
-    shape: [16, 8, 4]
-    global_shape: [32, 8, 4]
-    axes: [x, y, z]
-  - name: potential_visualization
-    from: pic.potential
-    to: visualization.potential
+    shape: [16, 8]
+    global_shape: [32, 8]
+    axes: [x, y]
+    delivery: all
+
+  - name: potential_display
+    from: simulation.potential
+    to: display.potential
     dtype: float64
-    shape: [16, 8, 4]
-    global_shape: [32, 8, 4]
-    axes: [x, y, z]
+    shape: [16, 8]
+    global_shape: [32, 8]
+    axes: [x, y]
+    delivery: latest
 ```
 
-programs には上の全プログラムを宣言する。送信元の関数呼び出しは1回でよい。
-fan-out による送信枠と queue の必要量も plan が合算する。
+producerが `potential` へ1回sendすると、両方へ配送されます。
+接続ごとにdeliveryとbuffer_slotsを選べますが、型・形状・軸・単位・modeは揃えてください。
 
-## Task API
+保存処理が遅く送信枠が満杯になった場合は、次のsendが待ちます。
+表示側をlatestにしても、allを選んだ宛先への配送は省略されません。
 
-接続に `kind: task` を指定する。省略した接続は `kind: stream`。
-Task の入力も Stream と同じ型付き配列・snapshot の契約を使う。
-Task の出力ポートは1宛先とし、暗黙の fan-out を行わない。
+## 計算をワーカーへ依頼する
+
+独立した計算を並行して処理したい場合は、接続に `kind: task` を指定します。
+consumerの `group_size` で、1つの依頼を処理するMPI rank数を決めます。
+
+次は、2rankで動くワーカーを4グループ作る設定例です。
+実行ファイル名は自分のプログラムへ置き換えてください。
 
 ```yaml
+schema: 1
 programs:
   simulation:
     command: ["./simulation"]
@@ -83,43 +99,58 @@ connections:
     axes: [coordinate, seed]
 ```
 
-この例の tracing は2 rankずつの4 groupとなり、各依頼を空いている1 groupへ配送する。
-各 group 内では入力を共有し、受信と完了は group 内の集団操作となる。
-複数 group の Task の処理完了順は保証しない。Stream は順序を保つため
-consumer 全 rank で1 groupとし、group_size を分割する設定を拒否する。
+この構成ではproducer 2rank、Coupler 1rank、consumer 8rankの**計11rank**を使います。
+各依頼は、空いている1グループへ配送されます。
+
+### 依頼する
+
+Contextを開いたproducer内で、入力配列をsubmitします。
+`seeds` は設定に一致する `float64`・shape `[3, 20]` の配列です。
 
 ```python
-ticket = ctx.submit("trace", seeds, step=step)
-advance_simulation()
-if not ticket.test():
-    ticket.wait()
+ticket = ctx.submit("trace", seeds, step=10)
+# ここで、依頼の結果に依存しない計算を進められる。
+ticket.wait()
 ticket.release()
-
-# tracing の全 group member が実行する。
-for task in ctx.tasks():
-    with task:
-        trace(task.array)
 ```
 
-Fortran は型付きの subroutine として ticket 変数を渡す。
+`submit` はsnapshotなら入力をコピーします。
+Ticketの `test()` は完了状態を調べ、`wait()` は処理完了まで待ちます。
+送信枠が埋まると、submit自体も待つ場合があります。
 
-```fortran
-type(ctca_ticket) :: ticket
-call ctx%submit("trace", seeds, ticket, step=step)
-call ticket%wait()
-call ticket%release()
+### 処理する
+
+ワーカーグループの**全rank**が、同じ順で受信と完了通知を行います。
+
+```python
+with Context("tracing") as ctx:
+    for task in ctx.tasks("trace"):
+        with task:
+            trace(task.array, ctx.comm)
 ```
 
-C は `cotocoa_submit(..., &ticket, ...)`、`cotocoa_ticket_test/wait/release` と
-`cotocoa_next_task`、`cotocoa_complete` を使う。
-型と次元は各言語で int32/float32/float64、1〜3次元に対応する。
+`trace` は利用者の計算です。MPIで計算を分担する場合は `ctx.comm` を使います。
+入力配列はグループ内の全rankへ渡されます。
+ファイル出力を1回だけ行う場合は、グループ内のrankを見て担当を決めてください。
 
-ticket の test/wait は入力を受信しただけでは完了せず、Worker が処理して complete
-した時点を表す。ticket の解放はローカルの参照の解放で、処理の取消しではない。
-ticket を解放しても Context の flush/close は当該処理を待つ。
-Context を閉じた後も残した ticket の完了状態を照会できる。
-Fortran の ticket の代入は参照を保持し、finalizer は MPI を呼ばずローカル参照だけを
-解放する。新しい submit で同じ ticket 変数を再利用することもできる。
+### C・Fortranで使う
 
-Task の wait は任意の計算結果を返す RPC ではなく、非同期処理の完了通知を扱う。
-ファイルや外部資源への処理結果の保存は Worker の利用者コードで行う。
+| 操作 | Fortran | C |
+| --- | --- | --- |
+| 依頼 | `ctx%submit` | `cotocoa_submit` |
+| 受信 | `ctx%next_task` | `cotocoa_next_task` |
+| 完了 | `task%complete` | `cotocoa_complete` とmessageの解放 |
+| 待機 | `ticket%wait` | `cotocoa_ticket_wait` |
+
+実行できるサンプルを[examples/tasks](../examples/tasks/README.md)に用意しています。
+[Fortran](../examples/tasks/fortran.f90)・[C](../examples/tasks/c.c)・[Python](../examples/tasks/python.py)のどれも送信側・受信側として使えます。
+
+## Taskで保証されること
+
+Ticketの完了は、ワーカーが処理完了を通知したことを表します。
+計算結果を返す機能ではないため、結果の保存はワーカーの利用者コードで行います。
+Ticketをreleaseしても依頼は取り消されず、Contextのflushやcloseは残りの依頼を待ちます。
+
+Taskは `delivery: all` を使い、1つの送信ポートの宛先は1つです。
+複数グループへ依頼した処理の完了順は保証しません。
+また、複数グループを持つconsumerにStream入力を混在させることはできません。
