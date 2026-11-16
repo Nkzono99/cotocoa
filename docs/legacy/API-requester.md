@@ -1,6 +1,6 @@
 # 従来API：Requester
 
-[ドキュメント一覧](README.md) · [従来APIの利用ガイド](USAGE.md) · [API一覧](API.md)
+[ドキュメント目次](../README.md) ｜ [従来APIのガイド](README.md) ｜ [従来APIの関数一覧](API.md)
 
 計算依頼を送る側です。完了待ちや、Workerからアクセスする共有領域の登録も行います。
 各リンク先に引数と戻り値の詳細（英語）があります。

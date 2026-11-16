@@ -1,8 +1,8 @@
 # 従来API：Worker
 
-[ドキュメント一覧](README.md) · [従来APIの利用ガイド](USAGE.md) · [API一覧](API.md)
+[ドキュメント目次](../README.md) ｜ [従来APIのガイド](README.md) ｜ [従来APIの関数一覧](API.md)
 
-依頼を受け取り、処理後に完了を通知します。Python版は[ctca4pyの使い方](USAGE_from_Python.md)を参照してください。
+依頼を受け取り、処理後に完了を通知します。Python版は[ctca4pyの使い方](PYTHON-WORKER.md)を参照してください。
 各リンク先に引数と戻り値の詳細（英語）があります。
 
 ## 開始・終了と終了確認

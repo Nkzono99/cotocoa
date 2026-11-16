@@ -1,16 +1,33 @@
-# 分割された領域を1つの配列にまとめる
+# 分割された配列をまとめる（Assembler）
 
-[ドキュメント一覧](README.md) · 前提：[連携のしくみ](OVERVIEW.md)
+[ドキュメント目次](README.md) ｜ 前提：[チュートリアル](TUTORIAL.md)・[しくみと用語](CONCEPTS.md)
 
-複数のproducer rankが分割領域を送る場合、受信側には局所配列が1件ずつ届きます。
-**Assembler**は同じstepの局所配列を集め、全領域が揃った時点で1枚のFrameを返します。
+送信側が領域分割している場合、受信側には各プロセスの担当分が別々のメッセージとして届きます
+（[領域分割された配列の送り方](CONCEPTS.md#領域分割された配列の送り方)）。
+**Assembler** は、同じステップのメッセージを集めて、全体領域の1つの配列にまとめる道具です。
 
-[入門例](HIGH-LEVEL-USAGE.md)では、shape `[3, 5, 7]` の2件を合わせて、
-`[6, 5, 7]` の配列を作れます。
+```text
+ messages received                              assembled
 
-## Pythonで組み立てる
+ step 1, source 0, offset [0,0,0]  --+
+                                     +-- push -->  Frame: step 1, shape [6,5,7]
+ step 1, source 1, offset [3,0,0]  --+
 
-入門例のconsumerを次のコードに置き換えると、全領域の平均を表示できます。
+ step 2, source 1, offset [3,0,0]  --+
+                                     +-- push -->  Frame: step 2, shape [6,5,7]
+ step 2, source 0, offset [0,0,0]  --+
+```
+
+受信したメッセージをAssemblerへ1件ずつ渡していくと（`push`）、
+あるステップの全プロセス分が揃った時点で、まとめた結果が返ります。この結果を **Frame** と呼びます。
+
+Assemblerは受信側のプログラムの中だけで動く道具で、通信は行いません。
+メッセージの受信と完了通知は、これまでどおり利用者のコードで行います。
+
+## Pythonで使う
+
+[チュートリアル](TUTORIAL.md)の例（1プロセスあたり `[3, 5, 7]`、全体 `[6, 5, 7]`）で、
+受信側を次のプログラムに置き換えると、全体領域の平均値を表示できます。
 
 ```python
 from cotocoa import Assembler, Context
@@ -24,40 +41,42 @@ with Context("consumer") as ctx:
                     print(frame.step, frame.array.shape, frame.array.mean())
 ```
 
-`push` は受信メッセージをコピーして取り込みます。
-そのstepがまだ揃わなければ `None`、揃えばFrameを返します。
-Frameの `array` は全体配列、`step` は集めたステップです。
+```text
+1 (6, 5, 7) 1.5
+2 (6, 5, 7) 2.5
+...
+10 (6, 5, 7) 10.5
+```
 
-入力Messageの完了は `with message:` が行います。
-**Frameにはcompleteを呼びません。**
-Frameの配列はNumPyが所有し、AssemblerやContextの終了後も保持できます。
-Assemblerのwith文は、正常終了時に未完成のstepがないことも確認します。
+- `assembler.push(message)` は、メッセージの配列を全体配列の該当位置へコピーします。
+  そのステップがまだ揃っていなければ `None` を、揃えばFrameを返します。
+- `frame.array` が全体領域の配列、`frame.step` がステップ番号です。
+  `frame.time` など、メッセージと同じ属性も使えます。
+- メッセージの完了通知は、これまでどおり `with message:` が行います。**Frameには完了通知は要りません。**
+- `frame.array` は普通のNumPy配列なので、保存しておけば後からも使えます。
+- `with Assembler(...)` のブロックを正常に抜けるとき、揃わないまま残ったステップがあればエラーになります。
 
-この例は全10stepを保持できるようにしています。完成配列1枚は1680バイトなので、
-1枚の上限を4096バイトにしています。実際の配列と送信元の進行差に合わせて変更してください。
+`Assembler` の2つの引数については、[上限の決め方](#上限の決め方)で説明します。
 
-## Fortranで組み立てる
-
-次はContextを開いたconsumerの受信ループです。
-`global_field` の型と次元を接続に合わせます。
+## Fortranで使う
 
 ```fortran
-! 宣言部
 type(ctca_assembler) :: assembler
 type(ctca_message) :: message, frame
 real(c_double), allocatable :: global_field(:,:,:)
-logical :: available, ready
+logical :: has_message, ready
 
-! ctxを開いた後
 call assembler%open(10, 4096_c_int64_t)
 do
-  call ctx%receive('potential', message, has_message=available)
-  if (.not. available) exit
+  call ctx%receive('potential', message, has_message)
+  if (.not. has_message) exit
+
   call assembler%push(message, frame, ready)
   call message%complete()
+
   if (ready) then
     call frame%copy_to(global_field)
-    print *, frame%step(), sum(global_field)/size(global_field)
+    print *, frame%step(), sum(global_field) / size(global_field)
     call frame%release()
   end if
 end do
@@ -65,50 +84,115 @@ call assembler%finish()
 call assembler%close()
 ```
 
-完成したFrameは `release` で解放します。入力Messageは通常どおり `complete` します。
-`finish` は未完成のstepを検出し、`close` はローカルの保持領域を解放します。
-
-## Cで組み立てる
-
-次の順に呼びます。各関数の戻り値は通常のC APIと同様に確認してください。
-
-| 関数 | 用途 |
+| 呼び出し | すること |
 | --- | --- |
-| `cotocoa_assembler_create` | 保持数とサイズ上限を指定して作成 |
-| `cotocoa_assembler_push` | Messageを取り込む。出力frameがNULL以外なら完成 |
-| `cotocoa_message_view` / `cotocoa_message_metadata` | 完成したFrameを読む |
-| `cotocoa_message_release` | Frameを解放する |
-| `cotocoa_assembler_finish` | 未完成のstepがないことを確認 |
-| `cotocoa_assembler_release` | Assemblerを解放する |
+| `assembler%open(max_pending_steps, max_frame_bytes)` | Assemblerを用意する。第2引数は `integer(c_int64_t)` |
+| `assembler%push(message, frame, ready)` | メッセージを取り込む。揃えば `ready` が真になり、`frame` にFrameが入る |
+| `frame%copy_to(array)`・`frame%step()` など | Frameから配列や情報を取り出す。メッセージと同じ手続きが使える |
+| `frame%release()` | Frameを解放する。次の `push` の前に呼ぶ |
+| `assembler%finish()` | 揃わないまま残ったステップがないことを確認する。残っていればエラー |
+| `assembler%close()` | Assemblerを解放する |
 
-pushは入力Messageを完了させません。入力には別途 `cotocoa_complete` とreleaseが必要です。
+Frameは `type(ctca_message)` の変数で受け取りますが、**`complete` ではなく `release` を呼びます**。
+完了通知（`complete`）が必要なのは、受信したメッセージ（上の `message`）のほうです。
+`push` はメッセージの内容をコピーするので、`push` の直後に `message%complete()` を呼んで構いません。
 
-## 組み立てに必要な条件
+## Cで使う
 
-Assemblerごとに、**1つのStream接続**を扱います。
+```c
+cotocoa_assembler *assembler = NULL;
+if (cotocoa_assembler_create(10, 4096, &assembler, &error))
+    cotocoa_abort(ctx, &error);
 
-- 接続は `kind: stream`・`delivery: all`。
-- 各source rankは、組み立てる各stepについて1件ずつ送る。
-- 各source rankのstepは、送信ごとに増加させる。
-- 同じstepの局所領域が、global_shapeを隙間や重なりなく埋める。
-- 同じstepでは時刻の有無と値を揃える。時刻の比較に許容誤差はない。
+for (;;) {
+    cotocoa_message *message = NULL, *frame = NULL;
+    int rc = cotocoa_receive(ctx, "potential", &message, &error);
+    if (rc == COTOCOA_END) break;
+    if (rc != COTOCOA_OK) cotocoa_abort(ctx, &error);
 
-複数の入力接続を組み立てる場合は、接続ごとにAssemblerを用意します。
-latestや、Taskを複数のワーカーグループに分配する接続には使えません。
+    if (cotocoa_assembler_push(assembler, message, &frame, &error))
+        cotocoa_abort(ctx, &error);
+    if (cotocoa_complete(message, &error))
+        cotocoa_abort(ctx, &error);
+    cotocoa_message_release(message);
 
-## 保持するメモリと進行差
+    if (frame) {
+        cotocoa_array_view view;
+        cotocoa_metadata meta;
+        cotocoa_message_view(frame, &view, &error);
+        cotocoa_message_metadata(frame, &meta, &error);
+        /* view（全体領域の配列）と meta.step を使って処理する。 */
+        cotocoa_message_release(frame);
+    }
+}
 
-`max_pending_steps` は同時に組み立て途中にできるstep数で、1〜1024です。
-`max_frame_bytes` は完成配列1枚の最大バイト数です。
+if (cotocoa_assembler_finish(assembler, &error))
+    cotocoa_abort(ctx, &error);
+cotocoa_assembler_release(assembler);
+```
 
-必要な配列領域の上限は、おおむね
-`max_pending_steps × max_frame_bytes` です。これに送信元の追跡情報や利用者が保持する完成配列が加わります。
-Pythonの既定値は2step・1枚256 MiBです。
+Frameは `cotocoa_message *` として得られ、配列と情報の読み方は受信メッセージと同じです。
+Frameには `cotocoa_complete` を呼ばず、`cotocoa_message_release` だけを呼びます。
 
-送信元ごとの進行差が上限を超えるとエラーになります。
-上限を適切に増やすか、producer側でflushしてから、そのプログラムのcommunicatorでbarrierするなど、
-送信元の進行を揃えてください。Assembler自体は送信元を同期しません。
+## 使える条件
 
-取り込み完了を通知したMessageについて、producerは次へ進めます。
-その通知は「全体配列の解析が終わった」という意味ではありません。
-全体の解析完了まで送信を待たせる必要がある場合は、処理順序も含めて設計してください。
+Assemblerは、次の条件を満たす接続で使えます。満たさないメッセージを `push` するとエラーになります。
+
+| 条件 | 理由 |
+| --- | --- |
+| 接続が `kind: stream`、`delivery: all` である | `latest` ではプロセスごとに別のステップが届くことがあり、揃わない |
+| 各送信プロセスが、各ステップについて**ちょうど1件**送る | 同じ `step` のメッセージを、全プロセス分集めて1つのFrameにするため |
+| 各送信プロセスの `step` が、送るたびに**増えていく** | 同じステップの重複を検出するため |
+| 同じステップの配列が、全体領域を**すき間も重なりもなく**埋める | 欠けや重複のある配列を、黙って返さないため |
+| 同じステップの配列の `time` が一致する（すべて時刻なし、またはすべて同じ値） | 異なる時刻の配列を混ぜないため |
+
+1つのAssemblerが扱うのは、1つの接続です。
+複数の接続をまとめたい場合は、接続ごとにAssemblerを用意し、メッセージの `port` や `name` を見て渡し分けます。
+
+## 上限の決め方
+
+Assemblerを作るときに、2つの上限を指定します。
+
+| 引数 | 意味 | 範囲 |
+| --- | --- | --- |
+| `max_pending_steps` | 同時に「集めている途中」にできるステップの数 | 1〜1024 |
+| `max_frame_bytes` | 全体配列1つの大きさの上限（バイト） | 1以上 |
+
+Pythonでは省略でき、既定値は `max_pending_steps=2`、`max_frame_bytes=256*1024*1024`（256 MiB）です。
+
+Assemblerが使うメモリは、最大でおよそ `max_pending_steps × 全体配列の大きさ` です。
+
+### max_frame_bytes
+
+全体配列の大きさ（要素数 × 1要素のバイト数）以上の値にします。
+チュートリアルの例では 6×5×7×8 = 1680 バイトなので、4096 を指定しています。
+設定の間違いで巨大な配列を確保してしまうのを防ぐための上限です。
+
+### max_pending_steps
+
+送信側のプロセスは、それぞれ自分のペースで送信します。
+あるプロセスがステップ3まで送った時点で、別のプロセスはまだステップ1を送っていない、ということが起こりえます。
+このときAssemblerは、ステップ1・2・3の3つを「集めている途中」として保持します。
+この数が `max_pending_steps` を超えると、エラーになります。
+
+必要な値は、**送信プロセス間で、送信済みのステップがどれだけずれるか**で決まります。
+
+| 送信側のプログラム | ずれ | `max_pending_steps` の目安 |
+| --- | --- | --- |
+| 各ステップでプロセス間の通信（袖領域の交換など）を行う、通常の領域分割シミュレーション | プロセスは足並みを揃えて進むので、ずれは1ステップ程度 | 2（既定値） |
+| プロセス同士が通信せず、独立に進む（チュートリアルの例） | 制限がない | 送る全ステップ数。または下の方法で足並みを揃える |
+
+独立に進むプログラムで足並みを揃えるには、送信側で数ステップごとに
+「`flush` を呼び、続けて自分のコミュニケータで `MPI_Barrier` を呼ぶ」ようにします。
+こうすると、全プロセスがそこまでの送信を終えてから次へ進みます。
+
+## 完了通知のタイミング
+
+送信側は、メッセージが完了通知されると、そのメッセージを「処理済み」と見なして先へ進みます。
+
+上のFortranとCの例では、`push` の直後に完了通知をしています。
+この書き方では、Frameを使った処理は完了通知の後に行われます。
+そのため、送信側の `flush` や `close` が戻った時点で、受信側の処理が終わっているとは限りません。
+
+Frameの処理が終わるまで送信側を待たせたい場合は、Pythonの例のように、
+Frameの処理を済ませてからメッセージを完了通知してください。

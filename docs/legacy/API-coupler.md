@@ -1,6 +1,6 @@
 # 従来API：Coupler
 
-[ドキュメント一覧](README.md) · [従来APIの利用ガイド](USAGE.md) · [API一覧](API.md)
+[ドキュメント目次](../README.md) ｜ [従来APIのガイド](README.md) ｜ [従来APIの関数一覧](API.md)
 
 Requesterの依頼を受け取り、progidで選んだWorkerへ配送します。
 各リンク先に引数と戻り値の詳細（英語）があります。

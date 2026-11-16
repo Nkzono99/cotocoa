@@ -1,37 +1,47 @@
-# CoToCoA ドキュメント
+# CoToCoA ドキュメント目次
 
-Fortran・C・Pythonのプログラム間で配列を送受信するための利用ガイドです。
-初めて使う場合は、次の順に進めてください。
+CoToCoAは、Fortran・C・Pythonのプログラムを1つのMPIジョブの中でつなぎ、配列を受け渡すライブラリです。
+概要は[リポジトリのREADME](../README.md)にあります。
 
-## 初めて使う
+## はじめての方（この順に読んでください）
 
-1. [インストール](INSTALL.md) — MPIライブラリとCLIの準備
-2. [最初の連携を動かす](HIGH-LEVEL-USAGE.md) — Fortran同士の例から始め、CやPythonへ差し替える
-3. [連携のしくみ](OVERVIEW.md) — プログラムの役割、領域の分割、正常終了
+| 順 | ページ | 内容 |
+| --- | --- | --- |
+| 1 | [インストール](INSTALL.md) | ライブラリをビルドし、`cotocoa` コマンドを使えるようにする |
+| 2 | [チュートリアル](TUTORIAL.md) | 付属の例を動かし、設定ファイルとコードを1行ずつ読む |
+| 3 | [しくみと用語](CONCEPTS.md) | 送受信の流れ、用語、守るべき約束とその理由 |
 
 ## 自分のプログラムへ組み込む
 
-| 言語 | ガイド |
+| ページ | 内容 |
 | --- | --- |
-| Fortran | [型、送受信、MPI communicator、エラー処理](API-Fortran.md) |
-| C | [配列view、送受信、メモリの解放、リンク方法](API-C.md) |
-| Python | [Context、NumPy配列、受信ループ、Ticket](API-Python.md) |
+| [Fortranから使う](GUIDE-FORTRAN.md) | 送信・受信のプログラム例、手続きの一覧、ビルド方法 |
+| [Cから使う](GUIDE-C.md) | 送信・受信のプログラム例、関数の一覧、ビルド方法 |
+| [Pythonから使う](GUIDE-PYTHON.md) | 送信・受信のプログラム例、クラスとメソッドの一覧 |
+| [設定ファイル](CONFIGURATION.md) | YAMLの全項目、既定値、上限 |
+| [起動と実行状態の確認](RUNNING.md) | `cotocoa` コマンド、Slurmでの起動、実行状態の見方 |
 
-接続先、プロセス数、配列の形状は[設定ファイル](CONFIGURATION.md)で指定します。
+3つの言語ガイドは同じ例（`simulation` から `analysis` へ電位を送る）を使っています。
+送信側と受信側で別の言語のページを見れば、そのまま組み合わせて動かせます。
 
-## 必要な機能を使う
+## 目的別のガイド
 
-| 目的 | 読むページ |
+| やりたいこと | ページ |
 | --- | --- |
-| 接続を増やす・処理を複数のワーカーへ分配する | [複数接続とTask](TASKS-AND-PORTS.md) |
-| 全件配送と最新値優先を選ぶ・入力配列の寿命を管理する | [配送と配列の保持](DELIVERY-AND-SHARING.md) |
-| 各MPI rankから届く領域を全体配列へまとめる | [領域の組み立て](ASSEMBLY.md) |
-| Slurmで起動する・エラーや待ち状態を調べる | [起動とトラブルシューティング](DIAGNOSTICS.md) |
-| APIの対応や機能の制約を調べる | [共通仕様](HIGH-LEVEL-API.md)・[API一覧](API.md) |
+| 複数の配列を送る・同じ配列を複数の相手へ送る・複数の相手から受け取る | [複数の配列・複数の相手とつなぐ](CONNECTIONS.md) |
+| 独立した計算を、空いているワーカーへ割り振る | [計算をワーカーへ依頼する](TASKS.md) |
+| 受信側の処理が遅く、送信側が待たされる | [受信が追いつかないとき](DELIVERY.md) |
+| 大きな配列を、送信時にコピーせずに送る | [コピーせずに送る](BORROW.md) |
+| 領域分割された配列を、受信側で1つにまとめる | [分割された配列をまとめる](ASSEMBLY.md) |
+
+## 困ったとき・調べたいとき
+
+| ページ | 内容 |
+| --- | --- |
+| [困ったとき](TROUBLESHOOTING.md) | エラーメッセージや「止まったまま進まない」ときの原因と対処 |
+| [リファレンス](REFERENCE.md) | 3言語のAPI対応表、メッセージに付く情報の一覧、保証と制約の一覧 |
 
 ## 従来APIを使う
 
-Requester・Coupler・Workerを自分で構成する場合は、[従来APIの利用ガイド](USAGE.md)へ進んでください。
-Pythonの従来Workerは[ctca4pyの使い方](USAGE_from_Python.md)を参照してください。
-
-[CoToCoAのトップへ](../README.md)
+Requester・Coupler・Workerを自分で書く従来のAPI（`CTCAR_*`・`CTCAC_*`・`CTCAW_*`、`ctca4py`）の文書は、
+[legacy/](legacy/README.md) にまとめています。上の各ページが説明する高水準APIとは別のものです。

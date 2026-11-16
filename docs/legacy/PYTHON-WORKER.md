@@ -1,13 +1,15 @@
-# 従来のPython Worker：ctca4py
+# PythonでWorkerを書く（ctca4py）
 
-[ドキュメント一覧](README.md) · [従来APIの利用ガイド](USAGE.md)
+[ドキュメント目次](../README.md) ｜ [従来APIのガイド](README.md)
 
 `ctca4py` は、従来のCoToCoAのWorkerをPythonで書くためのパッケージです。
-Pythonを送信側にも使いたい場合や、名前付きポートを使う場合は[Python API](API-Python.md)を参照してください。
+これは従来APIのためのパッケージです。
+Pythonから配列を送りたい場合や、設定ファイルとポート名でつなぐ高水準APIを使う場合は、
+[Pythonから使う](../GUIDE-PYTHON.md)を参照してください。
 
 ## インストール
 
-リポジトリ直下で、[ネイティブライブラリをビルド](INSTALL.md)した後に実行します。
+リポジトリ直下で、[ネイティブライブラリをビルド](../INSTALL.md)した後に実行します。
 
 ```sh
 .venv/bin/python -m pip install ./ctca4py
@@ -76,4 +78,4 @@ worker.CTCAW_finalize()
 | `CTCAW_prof_start_calc()` / `CTCAW_prof_stop_calc()` | 計算区間の開始・終了 |
 
 従来APIのarea ID、offset、型の規則は[Worker API](API-worker.md)を参照してください。
-CのRequester・Couplerと組み合わせたソース例は[sample4_worker.py](../test/sample4_worker.py)にあります。
+CのRequester・Couplerと組み合わせたソース例は[sample4_worker.py](../../test/sample4_worker.py)にあります。
