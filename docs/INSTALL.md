@@ -190,6 +190,17 @@ export COTOCOA_LIBRARY="$HOME/.local/cotocoa/lib/libcotocoa.so"
 
 インストール先のディレクトリ名が `lib64` の環境では、`COTOCOA_LIBRARY` のパスも `lib64` に合わせてください。
 
+## CoToCoAを更新したとき
+
+`git pull` などでCoToCoAを更新したら、次の3つをすべてやり直してください。
+
+1. ライブラリのビルド（手順2の `cmake --build build`）
+2. インストール先を使っている場合は、`cmake --install build --prefix ...`
+3. 自分のCやFortranのプログラムのビルド
+
+1つのジョブに参加する全プログラムとCouplerは、同じ版のライブラリを使う必要があります。
+古い版が混ざっていると、起動時に `startup mismatch` のエラーで止まります。
+
 ## KUDPCでの例
 
 KUDPCでは、既定で読み込まれているIntelコンパイラとIntel MPIの環境（`PrgEnvIntel`）をそのまま使えます。

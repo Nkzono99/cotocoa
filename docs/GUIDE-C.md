@@ -42,7 +42,6 @@ connections:
 
 ```c
 #include "cotocoa.h"
-#include <stddef.h>
 
 int main(void)
 {
@@ -55,7 +54,7 @@ int main(void)
     MPI_Comm_rank(cotocoa_comm(ctx), &rank);
 
     double potential[16][8];
-    const int64_t shape[3] = {16, 8, 1};   /* 使わない軸は1にする */
+    const int64_t shape[2] = {16, 8};
     cotocoa_array_view view =
         cotocoa_view_f64(&potential[0][0], 2, shape, COTOCOA_ORDER_C);
 
@@ -184,7 +183,7 @@ viewは、配列の先頭アドレス、型、次元数、形状、メモリ上�
 
 ```c
 double potential[16][8];
-const int64_t shape[3] = {16, 8, 1};
+const int64_t shape[2] = {16, 8};
 cotocoa_array_view view =
     cotocoa_view_f64(&potential[0][0], 2, shape, COTOCOA_ORDER_C);
 ```
@@ -197,12 +196,12 @@ cotocoa_array_view view =
 
 引数は `(先頭アドレス, 次元数, 形状, 並び方)` です。
 
-- 形状は、接続の `shape` と同じ順で書きます。上の例では第1軸が16、第2軸が8です。
+- 形状は、次元数と同じ個数の要素を、接続の `shape` と同じ順で書きます。上の例では第1軸が16、第2軸が8です。
 - 並び方には、通常のCの配列（最後の添字が最も速く変わる）なら `COTOCOA_ORDER_C` を指定します。
   Fortranと同じ並び（最初の添字が最も速く変わる）の配列なら `COTOCOA_ORDER_F` を指定します。
 
 `malloc` で確保した1次元の領域を `a[i*8 + j]` のように使っている場合も、
-`shape` を `{16, 8, 1}`、並び方を `COTOCOA_ORDER_C` とすれば同じ配列として送れます。
+`shape` を `{16, 8}`、並び方を `COTOCOA_ORDER_C` とすれば同じ配列として送れます。
 
 viewは配列の場所を記録しているだけなので、配列の内容を書き換えても作り直す必要はありません。
 

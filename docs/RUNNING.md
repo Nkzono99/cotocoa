@@ -204,13 +204,9 @@ rank=3 consumer closed step=10 sent=0 received=20 completed=20 dropped=0
 | `failed` | エラーで中断した。続けて理由が表示される |
 | `dispatched`・`coupler-poll` | （Coupler）通知を中継した・次の通知を待っている |
 
-状態は、プロセスがCoToCoAの手続きを呼んだときに、多くても1秒に1回の頻度で記録されます。このため、表示には次の性質があります。
-
-- **待っている段階（`ticket-completion`・`worker-poll`・`coupler-poll`）は、約1秒ごとに更新されます。** この表示は信頼できます。
-- **それ以外の段階が表示されているプロセスは、利用者のコードを実行しています。**
-  この場合、段階と件数は少し前の状態のままになっていることがあります。
-  たとえば、メッセージを受け取って処理している最中なのに、`open`、`received=0` と表示されることがあります。
-- 終了時の状態（`closed`・`failed`）は、必ず記録されます。
+状態は、段階が変わるたびに記録されます。待っている間は、約1秒ごとに経過時間が更新されます。
+利用者の計算が長く続いている間は、最後の段階のまま変わりません。
+たとえば `sent` や `processing` が続いているプロセスは、利用者の計算をしている最中です。
 
 `ranks without a status record` と表示されたプロセスは、一度も状態を記録していません。
 Contextを開く前に終了したか、まだ開いていないことを表します。
@@ -226,15 +222,21 @@ runtime:
   timeout_seconds: 600
 ```
 
-時間を過ぎると、`run` は全プロセスに終了を要求し、5秒たっても終わらなければ強制終了します。
-次のメッセージを表示して、終了コード2で終わります。
+時間を過ぎると、`run` は制限時間に達した時点の各プロセスの状態を表示してから、全プロセスを終了させます
+（終了を要求し、5秒たっても終わらなければ強制終了します）。終了コードは2です。
 
 ```text
+cotocoa: run exceeded timeout_seconds=600.0; rank states when the limit expired:
+cotocoa:   rank=0 simulation ticket-completion step=3 sent=2 received=0 completed=0 dropped=0
+cotocoa:   rank=1 simulation ticket-completion step=3 sent=2 received=0 completed=0 dropped=0
+cotocoa:   rank=2 __coupler__ coupler-poll step=2 sent=0 received=4 completed=0 dropped=0
+cotocoa:   rank=3 analysis processing step=1 sent=0 received=1 completed=0 dropped=0
 cotocoa: run exceeded timeout_seconds=600.0; inspect cotocoa status /path/to/.cotocoa/runs/20261116T001416Z-1a2b3c4d
 ```
 
-中断された後も、`cotocoa status` で、中断した時点の各プロセスの状態を確認できます。1行目の表示は `timeout` になります。
-止まったまま進まないジョブの原因を調べるときに使えます（[困ったとき](TROUBLESHOOTING.md#止まったまま進まない)）。
+この表示から、どのプロセスが何を待っていたかが分かります
+（読み方は[困ったとき](TROUBLESHOOTING.md#止まったまま進まない)）。
+中断された後も、`cotocoa status` で同じ状態を確認できます。1行目の表示は `timeout` になります。
 
 同じ値は、ライブラリの中の個々の待ち（完了通知の待ち、次のメッセージの待ちなど）の上限にもなります。
 [`cotocoa run` を使わずに起動した](#cotocoa-runを使わずに起動する)場合などに、1回の待ちがこの時間を超えると、
